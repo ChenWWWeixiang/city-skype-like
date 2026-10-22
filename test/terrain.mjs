@@ -120,29 +120,23 @@ check('桥上不能有路口', !brRes.ok && /桥上不能有路口/.test(brRes.m
 // ---------------------------------------------------------------- 3. 隧道
 console.log('\n[3] 隧道');
 const ct = new City({ name: '隧道测试' });
-let tunLine = null;
-for (let z = 3; z < MAP.SIZE - 3 && !tunLine; z++) {
-  for (let x = 3; x < MAP.SIZE - 3; x++) {
-    const i = T(x, z);
-    if (ct.terrain[i] === TERRAIN.water) continue;
-    // 找一段穿山（中间高、两端低）的路径
-    const line = [T(x - 4, z), T(x - 3, z), T(x - 2, z), T(x - 1, z), i,
-      T(x + 1, z), T(x + 2, z), T(x + 3, z), T(x + 4, z)];
-    if (line.some((k) => ct.terrain[k] === TERRAIN.water)) continue;
-    const hs = line.map((k) => ct.height[k]);
-    const peak = Math.max(...hs);
-    // 两端都低、中间是山脊 -> 正是需要隧道的地形
-    let maxStep = 0;
-    for (let k = 1; k < hs.length; k++) maxStep = Math.max(maxStep, Math.abs(hs[k] - hs[k - 1]));
-    // 两端同高、中间有陡坡 -> 直接修路会因坡度失败，挖隧道却能穿过
-    if (maxStep > ELEV.MAX_RAMP * 1.15 && hs[0] < peak - 3 &&
-        hs[hs.length - 1] < peak - 3 && Math.abs(hs[0] - hs[hs.length - 1]) < 1.5) {
-      tunLine = line; break;
-    }
+// 人造一座山：山脊在 x=24（高 21 m），两侧每格升/降 3 m（远超 15% 坡度上限）
+const mountainH = (x) => (x < 18 || x > 30) ? 0 : (x <= 24 ? (x - 17) * 3 : (31 - x) * 3);
+for (let z = 0; z < MAP.SIZE; z++) {
+  for (let x = 0; x < MAP.SIZE; x++) {
+    ct.height[z * MAP.SIZE + x] = mountainH(x);
   }
 }
+// 穿山的 9 格直线（两端 9 m，中间 21 m）
+const tunLine = [];
+for (let x = 20; x <= 28; x++) tunLine.push(T(x, 24));
 if (tunLine) {
-  const plain = new City({ name: '隧道对照' });
+  const plain = new City({ name: '隧道对照', flat: true });
+  for (let z = 0; z < MAP.SIZE; z++) {
+    for (let x = 0; x < MAP.SIZE; x++) {
+      plain.height[z * MAP.SIZE + x] = mountainH(x);
+    }
+  }
   const plainRes = plain.buildRoad(tunLine, 1);
   check('同一条路直接修会因太陡失败', !plainRes.ok && /坡度/.test(plainRes.msg), plainRes.msg || '竟然建成了');
   const tr = ct.buildRoad(tunLine, 1, { tunnel: true });

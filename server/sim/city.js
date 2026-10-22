@@ -114,10 +114,10 @@ export class City {
         if (Math.abs(x - c) < w) this.terrain[tileIndex(x, z)] = TERRAIN.water;
       }
     }
-    // 一个小湖（西南角）
-    for (let z = 38; z < 44; z++) {
-      for (let x = 3; x < 8; x++) {
-        const d = Math.hypot((x - 5.2) / 2.4, (z - 40.4) / 2.4);
+    // 一个小湖（西侧，靠主城区）—— 过湖要修桥
+    for (let z = 20; z < 27; z++) {
+      for (let x = 2; x < 8; x++) {
+        const d = Math.hypot((x - 4.4) / 2.6, (z - 23.0) / 3.0);
         if (d < 1 + 0.25 * Math.sin(x * 2 + z)) this.terrain[tileIndex(x, z)] = TERRAIN.water;
       }
     }
@@ -199,18 +199,18 @@ export class City {
     this.height = h;
   }
 
-  /** 山峰位置（确定性的，随种子变化） */
+  /** 山峰位置（确定性的，随种子变化）：主要分布在地图外围，中央留给玩家建城 */
   _genPeaks() {
     const S = MAP.SIZE;
     const s = this.seed;
-    const spots = [[0.30, 0.24], [0.66, 0.28], [0.27, 0.70], [0.63, 0.68], [0.47, 0.11]];
+    const spots = [[0.03, 0.03], [0.93, 0.08], [0.94, 0.60], [0.10, 0.80], [0.42, 0.95]];
     const peaks = [];
     for (let k = 0; k < spots.length; k++) {
       peaks.push({
-        x: (spots[k][0] + (hash2(k, 1, s) - 0.5) * 0.07) * S,
-        z: (spots[k][1] + (hash2(k, 2, s) - 0.5) * 0.07) * S,
-        r: 4.0 + hash2(k, 3, s) * 2.4,
-        h: 9 + hash2(k, 4, s) * 5.5,
+        x: (spots[k][0] + (hash2(k, 1, s) - 0.5) * 0.05) * S,
+        z: (spots[k][1] + (hash2(k, 2, s) - 0.5) * 0.05) * S,
+        r: 4.0 + hash2(k, 3, s) * 2.0,
+        h: 15 + hash2(k, 4, s) * 8,
       });
     }
     return peaks;
@@ -218,6 +218,19 @@ export class City {
 
   /** 地块地形高度（米） */
   elevAt(i) { return this.height ? (this.height[i] || 0) : 0; }
+
+  /** 住宅总容量（能住多少人） */
+  housingCapacity() {
+    const caps = BUILDING_CAPS.res;
+    let cap = 0;
+    for (const i of this.residentialTiles || []) {
+      const t = this.tiles[i];
+      if (!t.level) continue;
+      const eff = t.eff === undefined ? 1 : t.eff;
+      cap += caps[t.level] * eff;
+    }
+    return cap;
+  }
 
   _initTiles() {
     const N = MAP.SIZE * MAP.SIZE;
@@ -298,14 +311,22 @@ export class City {
     this.funds -= cost;
     if (elevated) {
       // 高架道路：两端设坡道，中部抬升形成立体交叉（地面道路保持在下层）
-      const profile = heightProfile(valid.length, ELEV.BRIDGE_HEIGHT, ELEV.RAMP_TILES);
-      for (let k = 0; k < valid.length; k++) {
+      const n = valid.length;
+      const profile = heightProfile(n, ELEV.BRIDGE_HEIGHT, ELEV.RAMP_TILES);
+      // 桥面本身要平（两端等高、中间一段平台），这样跨过地面路才像真正的立交
+      const endH = (i) => {
+        const t = this.tiles[i];
+        return (t.road && t.roadH !== undefined) ? t.roadH : this.elevAt(i);
+      };
+      const hA = endH(valid[0]), hB = endH(valid[n - 1]);
+      for (let k = 0; k < n; k++) {
         const i = valid[k];
         const t = this.tiles[i];
         if (!t.road) { t.zone = 0; t.level = 0; t.service = 0; }
         t.over = roadType;
-        // 高架的基准面是地形高度（坡道两端才能与地面道路接上）
-        t.h = this.elevAt(i) + profile[k];
+        // 基准面：两端与地面道路等高，中间按直线插值（桥面不会跟着地形起伏）
+        const base = n > 1 ? hA + (hB - hA) * (k / (n - 1)) : hA;
+        t.h = base + profile[k];
         t.olt = 0;
         this.markDirty(i);
       }
@@ -373,8 +394,8 @@ export class City {
       // --- 约束点：隧道两端 + 与已有道路相接处，路面高度必须与已有道路一致 ---
       const cons = new Map();
       const addCons = (k, h) => { if (!cons.has(k)) cons.set(k, h); };
-      addCons(0, nat[0]);
-      addCons(n - 1, nat[n - 1]);
+      // 先收集「与已有道路接驳处」的高度（优先级最高），
+      // 端点若没有接驳道路，再用地面高度兜底。
       for (let k = 0; k < n; k++) {
         const i = tiles[k];
         const x = i % S, z = Math.floor(i / S);
@@ -388,6 +409,8 @@ export class City {
           addCons(k, nt.roadH === undefined ? this.elevAt(ni) : nt.roadH);
         }
       }
+      if (!cons.has(0)) cons.set(0, nat[0]);
+      if (!cons.has(n - 1)) cons.set(n - 1, nat[n - 1]);
       const consArr = [...cons.entries()].sort((a, b) => a[0] - b[0]);
       const alignAt = (k) => {
         if (consArr.length === 1) return consArr[0][1];
@@ -420,17 +443,30 @@ export class City {
         // 离约束点越远越深（约束点处路面与已有道路齐平）
         let dmin = 1e9;
         for (const [ck] of consArr) { const d = Math.abs(k - ck); if (d < dmin) dmin = d; }
-        const bump = Math.min(1, dmin / ELEV.TUNNEL_RAMP_TILES);
-        prof[k] = align[k] - Math.min(Math.max(0, sm[k]), ELEV.TUNNEL_DEPTH) * bump;
+        // 下沉深度受坡度限制：离约束点 dmin 格，最多下沉 dmin * MAX_RAMP
+        const maxDrop = Math.min(ELEV.TUNNEL_DEPTH, dmin * ELEV.MAX_RAMP);
+        prof[k] = align[k] - Math.min(Math.max(0, sm[k]), maxDrop);
+      }
+      // 坡度限制：相邻两格高差必须 <= MAX_RAMP（否则路网会在此断开，车过不去）
+      const limit = (k) => ELEV.MAX_RAMP * this._tileStep(tiles[k - 1], tiles[k]);
+      for (let k = 1; k < n; k++) {
+        const lim = limit(k);
+        if (prof[k] - prof[k - 1] > lim) prof[k] = prof[k - 1] + lim;
+        else if (prof[k - 1] - prof[k] > lim) prof[k] = prof[k - 1] - lim;
+      }
+      for (let k = n - 2; k >= 0; k--) {
+        const lim = limit(k + 1);
+        if (prof[k] - prof[k + 1] > lim) prof[k] = prof[k + 1] + lim;
+        else if (prof[k + 1] - prof[k] > lim) prof[k] = prof[k + 1] - lim;
       }
       for (let k = 1; k < n; k++) {
         const step = this._tileStep(tiles[k - 1], tiles[k]);
-        if (Math.abs(prof[k] - prof[k - 1]) > ELEV.MAX_RAMP * 1.8 * step) {
+        if (Math.abs(prof[k] - prof[k - 1]) > ELEV.MAX_RAMP * step + 0.01) {
           return { ok: false, msg: '隧道坡度太大（入口离山太远），请把隧道修长一点' };
         }
       }
       for (let k = 0; k < n; k++) heights.set(tiles[k], prof[k]);
-      const bad = this._checkAgainstExisting(tiles, heights, ELEV.MAX_RAMP * 1.8);
+      const bad = this._checkAgainstExisting(tiles, heights, ELEV.MAX_RAMP);
       if (bad) return { ok: false, msg: bad };
       return { ok: true, heights, note: '隧道（路面在地面以下）' };
     }
@@ -526,6 +562,7 @@ export class City {
         if (!nt || !nt.road) continue;
         const nh = nt.roadH === undefined ? this.elevAt(ni) : nt.roadH;
         if (Math.abs(h - nh) > limit) {
+          if (process.env.CITY_DEBUG) console.error('[check] tile', x + ',' + z, 'h=' + h.toFixed(2), 'neighbor', nx + ',' + nz, 'nh=' + nh.toFixed(2), 'limit', limit);
           return '与已有道路的高差超过 ' + Math.round(limit / MAP.TILE * 100) +
             '%（坡度太陡，请绕山而行）';
         }
@@ -1057,14 +1094,19 @@ export class City {
     // --- 移民：外来车辆从高速出入口开进来（没有出入口就没有移民）---
     if (entrances.length) {
       const jobs = this.stats.jobs || 0;
-      const jobFactor = Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
-        (jobs + 25) / Math.max(45, dem.pop * 0.5));
+      // 岗位/人口比：没有工作就没有人愿意来（避免城市空转、盲目膨胀）
+      const jobPerCap = dem.pop > 0 ? jobs / dem.pop : 1;
+      const jobFactor = Math.max(0, Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
+        ((jobPerCap - 0.15) / 0.35) * DEMOGRAPHY.IMMIGRATION_JOB_FACTOR));
       // 幸福度低的城市没人愿意来（堵车、缺服务 -> 人口流失）
       const happyNow = this.stats.happiness === undefined ? 70 : this.stats.happiness;
       const happyFactor = Math.max(0, Math.min(1, (happyNow - 20) / 45));
+      // 住房不足时外来人口不会一直涌进来（要有地方住才搬家）
+      const freeHousing = Math.max(0, this.housingCapacity() - (dem.housed || 0));
+      const housingFactor = freeHousing > 60 ? 1 : freeHousing / 60;
       const base = DEMOGRAPHY.IMMIGRATION_BASE_PER_HOUR * jobFactor;
       const cap = DEMOGRAPHY.IMMIGRATION_MAX_PER_HOUR;
-      const rate = Math.min(cap, base * happyFactor) * entrances.length;
+      const rate = Math.min(cap, base * happyFactor) * entrances.length * housingFactor;
       dem._immigAcc += rate * hours;
       while (dem._immigAcc >= 1) {
         dem._immigAcc -= 1;
@@ -1110,8 +1152,9 @@ export class City {
     r.birth = pop * DEMOGRAPHY.BIRTH_RATE_PER_HOUR * edu;
     r.death = pop * DEMOGRAPHY.DEATH_RATE_PER_HOUR;
     const jobs = this.stats.jobs || 0;
-    const jobFactor = Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
-      (jobs + 25) / Math.max(45, pop * 0.5));
+    const jobPerCap = pop > 0 ? jobs / pop : 1;
+    const jobFactor = Math.max(0, Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
+      ((jobPerCap - 0.15) / 0.35) * DEMOGRAPHY.IMMIGRATION_JOB_FACTOR));
     const happyFactor = Math.max(0, Math.min(1, (happy - 20) / 45));
     const rate = Math.min(DEMOGRAPHY.IMMIGRATION_MAX_PER_HOUR,
       DEMOGRAPHY.IMMIGRATION_BASE_PER_HOUR * jobFactor * happyFactor);
@@ -1173,6 +1216,9 @@ export class City {
       trafficT: Math.round(this.traffic.t || 0),
       entrances: (this.entrances || []).slice(),
       terrain: Array.from(this.terrain),
+      // 地形高程图：必须存档！否则旧存档用新算法重建地形，路面的高程就对不上，
+      // 会出现「路悬在半空 / 被土埋住」。
+      height: Array.from(this.height || [], (v) => Math.round(v * 10) / 10),
       demography: {
         pop: this.demography.pop, housed: this.demography.housed,
         waiting: this.demography.waiting, births: this.demography.births,
@@ -1193,6 +1239,10 @@ export class City {
 
   static restore(data) {
     const city = new City({ id: data.id, name: data.name, seed: data.seed, funds: data.funds, tax: data.tax });
+    // 优先使用存档里的高程图（老存档没有则按种子重建）
+    if (Array.isArray(data.height) && data.height.length === city.tiles.length) {
+      city.height = Float32Array.from(data.height);
+    }
     city.tick = data.tick | 0;
     city.settleMinutes = data.settleMinutes || ECON.SETTLE_MINUTES;
     let oldFormat = false;

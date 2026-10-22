@@ -100,7 +100,8 @@ export class TrafficSim {
     // 路网通行能力（辆/交通秒）：约每 25km 单向车道可承载 1 辆/秒的稳态流量
     let laneM = 0;
     for (const a of net.arcs) laneM += a.length * a.lanes;
-    this.capacityRate = laneM / 25000;
+    // 实际可用能力取理论值的 75%：接近满负荷时排队会无限增长（死亡螺旋）
+    this.capacityRate = laneM / 25000 * 0.75;
     this.computeParkedCars();
   }
 

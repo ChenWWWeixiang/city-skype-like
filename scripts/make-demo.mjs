@@ -1,6 +1,5 @@
 // ============================================================================
-//  生成「天际示范城」：布局合理的示范城市（含大桥、高架立交、穿山隧道、
-//  住宅/商业/工业区与全套服务设施），并快进模拟若干游戏日。
+//  生成「天际示范城」：主城区 + 外环高架立交 + 穿山隧道 + 跨河大桥 + 山地森林
 //  运行： node scripts/make-demo.mjs [游戏天数]
 // ============================================================================
 import { City } from '../server/sim/city.js';
@@ -14,75 +13,77 @@ const city = new City({ id: 'demo_skyline', name: '天际示范城' });
 city.funds = 4000000;
 
 // ---------------------------------------------------------------- 道路网
-// 示范城建在河西岸的平原上（x 2..32），东岸隔着一条大河（要想过河得修桥）
-const AVE_X = [6, 18, 30];       // 南北向大道
-const AVE_Z = [6, 18, 30];       // 东西向大道
-const ST_X = [12, 24];           // 南北向街道
-const ST_Z = [12, 24];           // 东西向街道
+// 主城区 x 8..30 / z 8..28，外围是山岭（西南/南/东/东北）与大河（东侧 x≈38）
+const AVE_X = [10, 18, 26];      // 南北向大道
+const AVE_Z = [10, 18, 26];      // 东西向大道
+const ST_X = [14, 22];           // 南北向街道
+const ST_Z = [14, 22];           // 东西向街道
 const segX = (x0, x1, z) => { const o = []; for (let x = x0; x <= x1; x++) o.push(T(x, z)); return o; };
 const segZ = (x, z0, z1) => { const o = []; for (let z = z0; z <= z1; z++) o.push(T(x, z)); return o; };
 
-// 分段修建（每段 5 格）：
-//   1) 太平地 -> 地面道路
-//   2) 穿山太陡 -> 自动改挖隧道
-//   3) 跨水 -> 自动架桥
 let built = 0, tunnels = 0, bridges = 0, failed = 0;
 function lay(tiles, type, label, opts = {}) {
-  // 整段先试一次（隧道必须整段规划才有完整剖面）
   let r = city.buildRoad(tiles, type, opts);
   if (r.ok) {
     built++;
     if (opts.tunnel) tunnels++;
     for (const t of tiles) if (city.tiles[t].terrain === TERRAIN.water) bridges++;
-    return;
+    return true;
   }
-  if (opts.tunnel) { failed++; console.log('  ! ' + label + ' 失败: ' + r.msg); return; }
-  // 再按 5 格分段：太平地就修地面路，穿山就自动改挖隧道
-  for (let i = 0; i < tiles.length; i += 5) {
-    const chunk = tiles.slice(i, i + 5);
-    let rr = city.buildRoad(chunk, type);
-    if (!rr.ok) {
-      rr = city.buildRoad(chunk, type, { tunnel: true });
-      if (rr.ok) tunnels++;
-    }
-    if (!rr.ok) { failed++; console.log('  ! ' + label + ' 失败: ' + rr.msg); continue; }
-    built++;
-    for (const t of chunk) if (city.tiles[t].terrain === TERRAIN.water) bridges++;
+  if (opts.tunnel) { failed++; console.log('  ! ' + label + ' 失败: ' + r.msg); return false; }
+  const why = r.msg;
+  // 地面修不了 -> 挖隧道（整段规划才有完整剖面）
+  r = city.buildRoad(tiles, type, { tunnel: true });
+  if (r.ok) {
+    built++; tunnels++;
+    console.log('  ~ ' + label + ' 自动改为隧道（' + why + '）');
+    for (const t of tiles) if (city.tiles[t].terrain === TERRAIN.water) bridges++;
+    return true;
   }
+  failed++; console.log('  ! ' + label + ' 失败: ' + why + ' / 隧道: ' + r.msg);
+  return false;
 }
-// 东西向（主干道一直通到南边的快速路）
-for (const z of AVE_Z) lay(segX(2, 30, z), 2, '大道 z=' + z);
-for (const z of ST_Z) lay(segX(2, 30, z), 1, '街道 z=' + z);
-// 南北向：主干道从北岸一直修到南岸的快速路
-for (const x of AVE_X) lay(segZ(x, 2, 44), 2, '大道 x=' + x);
-for (const x of ST_X) lay(segZ(x, 2, 30), 1, '街道 x=' + x);
-// 穿山隧道：中间那座山太陡，修不了地面路 —— 挖隧道从山腹穿过
-// （隧道两端必须接在地面道路上，所以这里单独修一段，不与其它路交叉）
-const tunLine = segZ(23, 1, 4);
-lay(tunLine, 1, '穿山隧道 x=23', { tunnel: true });
-// 南侧快速路：一直延伸到地图西边缘 -> 在边缘开「高速出入口」
-//   途中会跨过大河 -> 自动架桥（桥上不能有路口）
-lay(segX(0, 44, 44), 3, '南侧快速路 z=44');
-// 高速出入口（城市与外界的连接）：外来通勤车从这里开进来上班、再从这里驶离
-const gate = city.addEntrance(T(0, 44));
-console.log('  高速出入口', gate.ok ? 'OK' : gate.msg);
-// 高架：沿街区上方跨越中央大道，形成立体交叉（两端坡道落地接入街道）
-const sky = [];
-for (let z = 11; z <= 25; z++) sky.push(T(24, z));
-const skyRes = city.buildRoad(sky, 2, { elevated: true });
-console.log('  高架', skyRes.ok ? 'OK' : skyRes.msg);
+
+// --- 主城区骨架 ---
+for (const x of AVE_X) lay(segZ(x, 8, 28), 2, '大道 x=' + x);
+for (const z of AVE_Z) lay(segX(8, 30, z), 2, '大道 z=' + z);
+for (const x of ST_X) lay(segZ(x, 8, 28), 1, '街道 x=' + x);
+for (const z of ST_Z) lay(segX(8, 30, z), 1, '街道 z=' + z);
+// --- 外环（西/北/东三条腿，南边用高架高速封闭）---
+lay(segZ(6, 8, 34), 2, '外环西路 x=6');       // 过湖 -> 自动架桥
+lay(segZ(30, 8, 44), 2, '外环东路 x=30');     // 南段接南岸高速
+lay(segX(6, 30, 8), 2, '外环北路 z=8');
+// --- 立交：南侧外环用高架高速，跨过 x=10 / 18 / 26 三条大道 -> 三座立交桥 ---
+const sky = city.buildRoad(segX(6, 30, 30), 3, { elevated: true });
+console.log('  高架高速（3 座立交）', sky.ok ? 'OK' : sky.msg);
+if (!sky.ok) failed++;
+// --- 南岸高速：穿山（隧道）+ 跨河（大桥），直通地图东、西两侧 ---
+lay(segX(0, 14, 44), 3, '南岸高速 西段');
+lay(segX(15, 22, 44), 3, '南岸高速 穿山隧道', { tunnel: true });   // 强行穿山 -> 隧道
+lay(segX(23, 32, 44), 3, '南岸高速 中段');
+lay(segX(33, 44, 44), 3, '南岸高速 跨河大桥');
+// 西侧外环穿西南山体（隧道），与南岸高速接上
+lay(segZ(6, 35, 43), 2, '外环西路 穿山隧道', { tunnel: true });
+// --- 高速出入口（城市与外界的唯一通道）---
+// 北部入口支线
+lay(segZ(10, 0, 8), 2, '入口支线 x=10');
+const gate1 = city.addEntrance(T(0, 44));
+const gate2 = city.addEntrance(T(10, 0));
+console.log('  高速出入口 西:', gate1.ok ? 'OK' : gate1.msg, ' 北:', gate2.ok ? 'OK' : gate2.msg);
 console.log('道路完成：路段 ' + built + ' 段，隧道 ' + tunnels + ' 段，跨水格 ' + bridges + '，失败 ' + failed +
   '　路网节点 ' + city.net.nodes.length + '，连通块 ' + city.net.components);
 
 // ---------------------------------------------------------------- 分区
-const BX = [[7, 11], [13, 17], [19, 23], [25, 29]];
+const BX = [[11, 13], [15, 17], [19, 21], [23, 25], [27, 29]];
 const res = [], com = [], ind = [];
 for (let bx = 0; bx < BX.length; bx++) {
   for (let bz = 0; bz < BX.length; bz++) {
     const [x0, x1] = BX[bx], [z0, z1] = BX[bz];
-    const isInd = bx === 3 && bz <= 1;                       // 工业区：东南（靠近高速）
-    const isCom = (bx === 2 && bz === 2) || (bx === 2 && bz === 1);   // 商业区：市中心
-    const isRes = !isInd && !isCom;                          // 其余是住宅
+    // 工业区：东南（靠近高速出入口）5 个街区；商业区：市中心十字 5 个街区
+    const isInd = (bx >= 3 && bz >= 3) || (bx === 4 && bz === 2);
+    const isCom = (bx === 2 && bz === 2) || (bx === 1 && bz === 2) || (bx === 3 && bz === 2)
+      || (bx === 2 && bz === 1) || (bx === 2 && bz === 3);
+    const isRes = !isInd && !isCom;
     for (let x = x0; x <= x1; x++) {
       for (let z = z0; z <= z1; z++) {
         const i = T(x, z);
@@ -107,21 +108,21 @@ const svc = (x, z, type) => {
 svc(28, 9, 'power');    // 发电厂
 svc(9, 27, 'water');     // 水塔（西南）
 svc(27, 27, 'water');    // 水塔（东南）
-svc(11, 9, 'police');    // 警察局
-svc(27, 9, 'fire');      // 消防站
+svc(12, 12, 'police');   // 警察局
+svc(27, 12, 'fire');     // 消防站
 svc(19, 19, 'clinic');   // 诊所
-svc(7, 19, 'school');    // 学校
-svc(21, 7, 'park');      // 公园
+svc(7, 10, 'school');    // 学校
+svc(21, 12, 'park');     // 公园
 
 // ---------------------------------------------------------------- 快进模拟
 console.log('快进模拟 ' + DAYS + ' 游戏日 ...');
 const t0 = Date.now();
-const TRAFFIC_DAYS = 10;      // 最后几天开启完整交通模拟（其余时间只跑发展/经济）
+const TRAFFIC_DAYS = 10;      // 最后几天开启完整交通模拟
 for (let d = 0; d < DAYS; d++) {
   const withTraffic = d >= DAYS - TRAFFIC_DAYS;
   for (let m = 0; m < 1440; m++) {
     city.advance(1);
-    if (withTraffic) city.stepTraffic(TIME.TRAFFIC_PER_GAME_HOUR / 60);   // 与正式游戏完全一致的时钟比例
+    if (withTraffic) city.stepTraffic(TIME.TRAFFIC_PER_GAME_HOUR / 60);
   }
   if (d % 10 === 0 || d === DAYS - 1) {
     console.log('  第 ' + (d + 1) + ' 日  人口 ' + city.stats.population +
@@ -150,3 +151,16 @@ let mv = 0, msum = 0, mstop = 0;
 for (const v of city.traffic.vehicles) { if (v.parked || v.dwell > 0) continue; mv++; msum += v.v; if (v.v < 1) mstop++; }
 console.log('  行驶中车辆', mv, ' 平均速度', (msum / Math.max(1, mv) * 3.6).toFixed(1), 'km/h 几乎停住', mstop,
   ' 停靠中', city.traffic.vehicles.length - mv);
+// 城市结构诊断
+const hist = { 1: [0, 0, 0, 0], 2: [0, 0, 0, 0], 3: [0, 0, 0, 0] };
+for (const t of city.tiles) { if (t.zone && t.level) hist[t.zone][t.level]++; }
+const names = { 1: '住宅', 2: '商业', 3: '工业' };
+for (const z of [1, 2, 3]) {
+  console.log('  ' + names[z] + ' 建筑等级分布 1级 ' + hist[z][1] + ' / 2级 ' + hist[z][2] + ' / 3级 ' + hist[z][3]);
+}
+console.log('  住房容量 ' + Math.round(city.housingCapacity()) + ' 人，已入住 ' + Math.round(city.demography.housed) +
+  '，待安置 ' + Math.round(city.demography.waiting) + '，人口 ' + Math.round(city.demography.pop) +
+  '，岗位 ' + city.stats.jobs + '，失业率 ' + Math.round((city.stats.unemployment || 0) * 100) + '%');
+console.log('  需求 R' + (city.demand.res || 0).toFixed(2) + ' C' + (city.demand.com || 0).toFixed(2) +
+  ' I' + (city.demand.ind || 0).toFixed(2) + '　幸福度 ' + Math.round(city.stats.happiness) +
+  '　商业效率 ' + Math.round((city.stats.effCommercial || 0) * 100) + '%');

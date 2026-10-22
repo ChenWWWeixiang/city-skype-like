@@ -142,40 +142,83 @@ export function createScene() {
  * 地形网格：把地形高程（山丘 / 河谷 / 隧道堑壕）反映到地表的顶点上。
  * 隧道那一格的地表会被「挖低」到路面高度，于是山体上出现一条真实的隧道沟槽。
  */
+/** 每格的有效地表高度：有路的格子以路面为准（挖方/填方），隧道更低 */
+function tileEffHeights(state) {
+  const S = MAP.SIZE;
+  const h = state.height;
+  const eff = new Float32Array(S * S);
+  for (let i = 0; i < S * S; i++) {
+    let v = h ? (h[i] || 0) : 0;
+    // 隧道不挖地表：山体保持原样，路面在山体内部穿过（从外面看就是「钻进山里」）
+    if (state.road && state.road[i] && state.roadH && !(state.tunnel && state.tunnel[i])) {
+      const rh = state.roadH[i] || 0;
+      if (rh - 0.04 < v) v = rh - 0.04;      // 路面不能被土埋住
+    }
+    eff[i] = v;
+  }
+  return eff;
+}
+
+/**
+ * 地形网格顶点高度（(S+1)×(S+1)）：
+ *   基础 = 相邻四格地表的平均（保持平滑），
+ *   但凡挨着道路，顶点不能高于路面 —— 否则斜坡上的路会被土埋掉。
+ */
+export function computeGroundVertices(state) {
+  const S = MAP.SIZE;
+  const eff = tileEffHeights(state);
+  const V = new Float32Array((S + 1) * (S + 1));
+  const roadH = state.roadH;
+  // 隧道路段不参与「把地表压到路面高度」的修正，否则山体会被削平
+  const isRoad = (i) => !!(state.road && state.road[i] && !(state.tunnel && state.tunnel[i]));
+  for (let vz = 0; vz <= S; vz++) {
+    for (let vx = 0; vx <= S; vx++) {
+      let sum = 0, n = 0, minRoad = Infinity;
+      for (const [dx, dz] of [[-1, -1], [0, -1], [-1, 0], [0, 0]]) {
+        const x = vx + dx, z = vz + dz;
+        if (x < 0 || z < 0 || x > S - 1 || z > S - 1) continue;
+        const i = z * S + x;
+        sum += eff[i]; n++;
+        if (isRoad(i) && roadH) minRoad = Math.min(minRoad, roadH[i] - 0.04);
+      }
+      let v = n ? sum / n : 0;
+      if (minRoad < Infinity && v > minRoad) v = minRoad;
+      V[vz * (S + 1) + vx] = v;
+    }
+  }
+  return V;
+}
+
+/** 世界上任意一点的地表高度（建筑 / 树木 / 设施都按它落地） */
+export function groundHeightAt(state, wx, wz) {
+  const S = MAP.SIZE;
+  if (!state._groundVerts) state._groundVerts = computeGroundVertices(state);
+  const V = state._groundVerts;
+  const gx = (wx + HALF) / MAP.TILE, gz = (wz + HALF) / MAP.TILE;
+  const x0 = Math.max(0, Math.min(S, Math.floor(gx)));
+  const z0 = Math.max(0, Math.min(S, Math.floor(gz)));
+  const fx = Math.max(0, Math.min(1, gx - x0));
+  const fz = Math.max(0, Math.min(1, gz - z0));
+  const at = (x, z) => V[Math.max(0, Math.min(S, z)) * (S + 1) + Math.max(0, Math.min(S, x))];
+  const a = at(x0, z0) * (1 - fx) + at(x0 + 1, z0) * fx;
+  const b = at(x0, z0 + 1) * (1 - fx) + at(x0 + 1, z0 + 1) * fx;
+  return a * (1 - fz) + b * fz;
+}
+
 export function rebuildTerrain(groundMesh, state) {
   const geo = groundMesh.geometry;
   const pos = geo.getAttribute('position');
   const S = MAP.SIZE;
-  const h = state.height;
-  // 有效地表高度：隧道格要挖到路面以下
-  const eff = new Float32Array(S * S);
-  for (let i = 0; i < S * S; i++) {
-    let v = h ? (h[i] || 0) : 0;
-    if (state.tunnel && state.tunnel[i]) {
-      const rh = state.roadH ? (state.roadH[i] || 0) : v;
-      if (rh < v) v = rh - 0.12;
-    }
-    eff[i] = v;
-  }
-  const tileH = (x, z) => {
-    if (x < 0) x = 0; else if (x > S - 1) x = S - 1;
-    if (z < 0) z = 0; else if (z > S - 1) z = S - 1;
-    return eff[z * S + x];
-  };
-  const sample = (gx, gz) => {
-    const x = gx - 0.5, z = gz - 0.5;
-    const x0 = Math.floor(x), z0 = Math.floor(z);
-    const fx = x - x0, fz = z - z0;
-    const a = tileH(x0, z0) * (1 - fx) + tileH(x0 + 1, z0) * fx;
-    const b = tileH(x0, z0 + 1) * (1 - fx) + tileH(x0 + 1, z0 + 1) * fx;
-    return a * (1 - fz) + b * fz;
-  };
+  const V = computeGroundVertices(state);
+  state._groundVerts = V;
   for (let i = 0; i < pos.count; i++) {
     // 网格本体在 XY 平面上（靠 mesh.rotation 摆平），局部 +Y -> 世界 -Z
-    const gx = (pos.getX(i) + HALF) / MAP.TILE;
-    const gz = (HALF - pos.getY(i)) / MAP.TILE;
+    const vx = Math.round((pos.getX(i) + HALF) / MAP.TILE);
+    const vz = Math.round((HALF - pos.getY(i)) / MAP.TILE);
+    const x = Math.max(0, Math.min(S, vx));
+    const z = Math.max(0, Math.min(S, vz));
     // 局部 Z 轴 = 世界高度（网格靠 mesh.rotation.x = -90° 摆平）
-    pos.setZ(i, sample(gx, gz));
+    pos.setZ(i, V[z * (S + 1) + x]);
   }
   pos.needsUpdate = true;
   geo.computeVertexNormals();

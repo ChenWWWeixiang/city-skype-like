@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MAP, HALF, hash2 } from '../constants.js';
+import { groundHeightAt } from './world.js';
 
 function paint(geo, hex) {
   const c = new THREE.Color(hex);
@@ -161,7 +162,7 @@ export class ServiceRenderer {
       const wz = (z + 0.5) * MAP.TILE - HALF;
       const rot = Math.floor(hash2(x, z, 31) * 4) * Math.PI / 2;
       q.setFromAxisAngle(this._up, rot);
-      const gy = (state.height && state.height[i]) || 0;
+      const gy = groundHeightAt(state, wx, wz);
       p.set(wx, gy, wz);
       s.set(1, 1, 1);
       m.compose(p, q, s);

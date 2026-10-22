@@ -3,6 +3,7 @@
 // ============================================================================
 import * as THREE from 'three';
 import { MAP, HALF, hash2 } from '../constants.js';
+import { groundHeightAt } from './world.js';
 
 const SPECS = {
   1: [
@@ -152,7 +153,8 @@ export class BuildingRenderer {
       const hScaled = h * (diag ? 0.72 : 1);
       q.setFromAxisAngle(up, rot);
       // 建筑落在地形上（地形有起伏时不会陷进地里或浮在空中）
-      pos.set(wx, (state.height && state.height[i]) || 0, wz);
+      const gy = groundHeightAt(state, wx, wz);
+      pos.set(wx, gy, wz);
       scl.set(spec.w * shrink, hScaled, spec.d * shrink);
       m.compose(pos, q, scl);
       const mesh = this.meshes[zone][lv - 1];
@@ -165,7 +167,7 @@ export class BuildingRenderer {
       counts[zone][lv - 1] = n + 1;
       if (zone === 1 && lv === 1 && roofCount < this.roofs.instanceMatrix.count) {
         const rh = 3.2 + hash2(x, z, 55) * 1.6;
-        pos.set(wx, ((state.height && state.height[i]) || 0) + hScaled, wz);
+        pos.set(wx, gy + hScaled, wz);
         scl.set(spec.w * 0.92 * shrink, rh * (diag ? 0.72 : 1), spec.d * 0.92 * shrink);
         m.compose(pos, q, scl);
         this.roofs.setMatrixAt(roofCount, m);

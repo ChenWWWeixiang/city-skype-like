@@ -84,6 +84,7 @@ export class UI {
     $('btn-rename').addEventListener('click', () => this.renameCity());
     $('btn-clone').addEventListener('click', () => this.cloneCity());
     $('help-close').addEventListener('click', () => $('help').classList.add('hidden'));
+    $('help-x').addEventListener('click', () => $('help').classList.add('hidden'));
     $('btn-help').addEventListener('click', () => $('help').classList.remove('hidden'));
     $('loading').classList.add('gone');
   }

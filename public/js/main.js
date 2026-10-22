@@ -67,6 +67,7 @@ async function main() {
   net.on('state', () => {
     ui.update();
     tutorial.update();
+    if (!didFocus) { didFocus = true; focusCity(); }
   });
   net.on('joined', (m) => {
     document.getElementById('loading').classList.add('gone');
@@ -122,6 +123,27 @@ async function main() {
   }
   net.connect(cityId);
 
+  // 打开城市时把镜头对准已建成的区域（否则总是盯着地图中心的空地）
+  let didFocus = false;
+  function focusCity() {
+    const S = 48;
+    let sx = 0, sz = 0, n = 0, minx = 99, maxx = -1, minz = 99, maxz = -1;
+    for (let i = 0; i < state.road.length; i++) {
+      if (!state.road[i] && !state.over[i]) continue;
+      const x = i % S, z = Math.floor(i / S);
+      sx += x; sz += z; n++;
+      if (x < minx) minx = x;
+      if (x > maxx) maxx = x;
+      if (z < minz) minz = z;
+      if (z > maxz) maxz = z;
+    }
+    if (!n) return;
+    const cx = ((sx / n) + 0.5) * 16 - 384;
+    const cz = ((sz / n) + 0.5) * 16 - 384;
+    const span = Math.max(maxx - minx, maxz - minz) + 8;
+    rts.focus(cx, cz, Math.min(600, Math.max(190, span * 11)));
+  }
+
   addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
@@ -160,6 +182,15 @@ async function main() {
     rts.update(dt);
 
     // 数据变更 -> 增量重建
+    // 顺序很重要：先重建地形（山体/河谷/隧道沟槽），再按新地形摆放道路、树木、建筑。
+    // 否则树会按旧地形贴地，地面一改就变成「悬空的绿色三角块」。
+    if (state.terrainDirty) {
+      rebuildWater(world.water, state);
+      rebuildTerrain(world.ground, state);   // 地形起伏（山丘 / 河谷 / 隧道沟槽）
+      state.terrainDirty = false;
+      state.roadsDirty = true;              // 路基 / 桥墩 / 树木要跟着新地形重画
+      state.buildingsDirty = true;           // 建筑也要重新落地
+    }
     if (state.roadsDirty) {
       roads.rebuild(state);
       props.rebuild(state);
@@ -177,11 +208,6 @@ async function main() {
     incidents.setEvents(state.events);
     incidents.update(dt);
     services.updateBeacons(dt);
-    if (state.terrainDirty) {
-      rebuildWater(world.water, state);
-      rebuildTerrain(world.ground, state);   // 地形起伏（山丘 / 河谷 / 隧道沟槽）
-      state.terrainDirty = false;
-    }
     if (state.congestionDirty) {
       roads.updateCongestion(state);
       state.congestionDirty = false;

@@ -218,6 +218,7 @@ export class Net {
     if (h.height) {
       for (let i = 0; i < N; i++) state.height[i] = h.height[i] || 0;
       state.terrainDirty = true;
+      state._groundVerts = null;
     }
     const d = h.diffs || [];
     for (let i = 0; i < d.length; i += 18) {
@@ -230,7 +231,10 @@ export class Net {
           state.olt[t] !== d[i + 14] || state.roadH[t] !== d[i + 15] ||
           state.bridge[t] !== d[i + 16] || state.tunnel[t] !== d[i + 17]) state.roadsDirty = true;
       // 路面高程变了 -> 地形（隧道沟槽 / 路基）也要重画
-      if (state.roadH[t] !== d[i + 15] || state.tunnel[t] !== d[i + 17]) state.terrainDirty = true;
+      if (state.roadH[t] !== d[i + 15] || state.tunnel[t] !== d[i + 17]) {
+        state.terrainDirty = true;
+        state._groundVerts = null;      // 地表网格变了 -> 缓存的顶点高度作废
+      }
       state.zone[t] = d[i + 1]; state.level[t] = d[i + 2]; state.road[t] = d[i + 3];
       state.mask[t] = d[i + 4]; state.service[t] = d[i + 5]; state.land[t] = d[i + 6];
       state.power[t] = d[i + 7]; state.water[t] = d[i + 8]; state.terrain[t] = d[i + 9];

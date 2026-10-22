@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MAP, HALF, hash2 } from '../constants.js';
+import { groundHeightAt } from './world.js';
 
 function treeGeo() {
   const trunk = new THREE.CylinderGeometry(0.34, 0.5, 4.2, 6);
@@ -94,15 +95,18 @@ export class PropRenderer {
       if (state.terrain && state.terrain[i]) continue;
       const x = i % MAP.SIZE, z = Math.floor(i / MAP.SIZE);
       const r = hash2(x, z, 4242);
-      if (r > 0.26) continue;
+      // 山上更茂密（森林），平地上稀疏（留作开发）
+      const gh = (state.height && state.height[i]) || 0;
+      const dens = 0.26 + Math.min(0.34, gh / 26);
+      if (r > dens) continue;
       const r2 = hash2(x, z, 991);
-      if (r2 < 0.42) continue;              // 一部分空地留作开发
+      if (r2 < 0.42 - dens * 0.7) continue;   // 一部分空地留作开发
       const wx = (x + 0.5) * MAP.TILE - HALF + (hash2(x, z, 7) - 0.5) * 9;
       const wz = (z + 0.5) * MAP.TILE - HALF + (hash2(x, z, 9) - 0.5) * 9;
       const sc = 0.75 + hash2(x, z, 11) * 0.75;
       q.setFromAxisAngle(this._up, hash2(x, z, 13) * Math.PI * 2);
-      // 树要长在地形上
-      p.set(wx, (state.height && state.height[i]) || 0, wz);
+      // 树要长在地形上（按实际落点取高度，山坡上也不会悬空）
+      p.set(wx, groundHeightAt(state, wx, wz), wz);
       s.set(sc, sc * (0.85 + hash2(x, z, 17) * 0.4), sc);
       m.compose(p, q, s);
       this.trees.setMatrixAt(n, m);

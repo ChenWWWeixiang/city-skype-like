@@ -171,7 +171,7 @@ function computeLandValue(city) {
     if (nearWater) v += LAND.WATER_BONUS;
     if (t.zone === 1) v += 5;
     if (t.zone === 2) v += 8;
-    if (t.zone === 3) v -= 6;
+    if (t.zone === 3) v += 2;   // 工业区也能长成工业园（否则 3 级工厂永远建不出来）
     raw[i] = Math.max(LAND.MIN, Math.min(LAND.MAX, v));
     sum += raw[i]; cnt++;
   }
@@ -240,7 +240,7 @@ function updateGrowth(city) {
   const d = city.demand;
   const dByZone = { 1: d.res, 2: d.com, 3: d.ind };
   // 建筑等级门槛：地价越高越容易长成高层，郊区保持低层，形成城市天际线梯度
-  const landThreshold = [0, 22, 52, 78];
+  const landThreshold = [0, 22, 48, 62];
   let changed = false;
   for (let i = 0; i < tiles.length; i++) {
     const t = tiles[i];
@@ -416,6 +416,9 @@ function updateDemand(city) {
   if (resTotal > 0 && resEmpty > resTotal * 0.35) {
     res += 0.32 * (resEmpty / resTotal);
   }
+  // 有人来了却没房住 -> 住宅需求上升（房子会加高），避免「人多没房」的僵局
+  const waiting = (city.demography && city.demography.waiting) || 0;
+  if (waiting > 0 && pop > 0) res += Math.min(0.75, (waiting / pop) * 2.0);
 
   // 商业：服务居民，商业岗位目标约为人口的 20%
   let com = DEMAND.COM_BASE;
@@ -425,6 +428,9 @@ function updateDemand(city) {
   com -= st.unemployment * DEMAND.UNEMPLOY_COM * 0.4 * unempW;
   com -= cong * DEMAND.CONGESTION_PENALTY * 0.55;
   com += landD * 0.5;
+  // 失业多 = 有富余劳动力 -> 商业/工业愿意扩张并招人（自愈：岗位追人口）
+  const spare = Math.max(0, (st.unemployment || 0) - 0.10);
+  com += Math.min(0.30, spare * 0.65);
 
   // 工业：生产商品，工业岗位目标约为人口的 28%
   let ind = DEMAND.IND_BASE;
@@ -433,6 +439,7 @@ function updateDemand(city) {
   ind -= tax.ind * DEMAND.TAX_PENALTY;
   ind -= cong * DEMAND.CONGESTION_PENALTY * 0.35;
   ind += landD * 0.25;
+  ind += Math.min(0.30, spare * 0.65);
 
   const clamp = (v) => Math.max(-1, Math.min(1, v));
   city.demand = { res: clamp(res), com: clamp(com), ind: clamp(ind) };
