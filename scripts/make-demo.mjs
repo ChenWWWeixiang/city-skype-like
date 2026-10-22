@@ -44,8 +44,8 @@ function lay(tiles, type, label, opts = {}) {
   return false;
 }
 
-// --- 主城区骨架 ---
-for (const x of AVE_X) lay(segZ(x, 8, 28), 2, '大道 x=' + x);
+// --- 主城区骨架（南北向大道延伸到 z=30，才能被高架高速跨过形成立交）---
+for (const x of AVE_X) lay(segZ(x, 8, 30), 2, '大道 x=' + x);
 for (const z of AVE_Z) lay(segX(8, 30, z), 2, '大道 z=' + z);
 for (const x of ST_X) lay(segZ(x, 8, 28), 1, '街道 x=' + x);
 for (const z of ST_Z) lay(segX(8, 30, z), 1, '街道 z=' + z);
