@@ -79,10 +79,10 @@ const res = [], com = [], ind = [];
 for (let bx = 0; bx < BX.length; bx++) {
   for (let bz = 0; bz < BX.length; bz++) {
     const [x0, x1] = BX[bx], [z0, z1] = BX[bz];
-    // 工业区：东南（靠近高速出入口）5 个街区；商业区：市中心十字 5 个街区
-    const isInd = (bx >= 3 && bz >= 3) || (bx === 4 && bz === 2);
-    const isCom = (bx === 2 && bz === 2) || (bx === 1 && bz === 2) || (bx === 3 && bz === 2)
-      || (bx === 2 && bz === 1) || (bx === 2 && bz === 3);
+    // 工业区：东南工业园 7 个街区（靠近高速出入口）；商业区：市中心 6 个街区
+    const isInd = (bx >= 3 && bz >= 2) || (bx === 2 && bz === 4);
+    const isCom = (bx === 2 && bz === 2) || (bx === 1 && bz === 2) || (bx === 2 && bz === 1)
+      || (bx === 2 && bz === 3) || (bx === 1 && bz === 3) || (bx === 3 && bz === 1);
     const isRes = !isInd && !isCom;
     for (let x = x0; x <= x1; x++) {
       for (let z = z0; z <= z1; z++) {

@@ -309,8 +309,10 @@ function updateOccupancy(city, dtMin) {
   // 昼夜节律：白天生意旺、客流大，夜间回落 —— 人口与岗位因此持续小幅波动
   const hour = city.hourOfDay;
   const daily = 0.86 + 0.26 * Math.sin((hour - 9) / 24 * Math.PI * 2);
-  const comTarget = clamp01(0.18 + d.com * 0.95) * daily;
-  const indTarget = clamp01(0.18 + d.ind * 0.95) * (0.9 + 0.2 * daily);
+  // 失业多 = 有富余劳动力，商店/工厂会招人（岗位空着不招人不合理）
+  const spare = Math.max(0, (st.unemployment || 0) - 0.08);
+  const comTarget = clamp01(0.18 + d.com * 0.95 + spare * 0.45) * daily;
+  const indTarget = clamp01(0.18 + d.ind * 0.95 + spare * 0.45) * (0.9 + 0.2 * daily);
   // 每小时趋近目标 4%（入住/搬出是缓慢过程）
   const k = Math.min(0.4, 0.04 * (dtMin / 60));
   const tiles = city.tiles;
@@ -398,7 +400,9 @@ function updateDemand(city) {
   res += (1 - st.unemployment) * 0.30 * (0.4 + 0.6 * unempW);
   // 失业惩罚设上限，避免"无岗位 -> 无住宅 -> 永远无岗位"的开局死锁
   res -= Math.min(0.28, st.unemployment * DEMAND.UNEMPLOY_RES * 0.45 * unempW);
-  res += jobsPerCap > 0.42 ? 0.26 : (jobsPerCap > 0.12 ? 0.04 : -0.06);
+  // 岗位「空着」不算数：失业率高说明招不到人 / 没岗位，住宅就不该继续扩张
+  const employRate = Math.max(0, 1 - (st.unemployment || 0));
+  res += (jobsPerCap > 0.42 ? 0.26 : (jobsPerCap > 0.12 ? 0.04 : -0.06)) * (0.25 + 0.75 * employRate);
   res -= tax.res * DEMAND.TAX_PENALTY;
   res -= cong * DEMAND.CONGESTION_PENALTY;
   res += ((happy - 60) / 100) * 0.45;
@@ -420,26 +424,26 @@ function updateDemand(city) {
   const waiting = (city.demography && city.demography.waiting) || 0;
   if (waiting > 0 && pop > 0) res += Math.min(0.75, (waiting / pop) * 2.0);
 
-  // 商业：服务居民，商业岗位目标约为人口的 20%
+  // 商业：服务居民，商业岗位目标约为人口的 30%
   let com = DEMAND.COM_BASE;
-  com += comJobs < pop * 0.20 ? 0.30 : -0.14;
+  com += comJobs < pop * 0.30 ? 0.26 : -0.10;
   com += pop > 300 ? 0.10 : 0;
   com -= tax.com * DEMAND.TAX_PENALTY;
   com -= st.unemployment * DEMAND.UNEMPLOY_COM * 0.4 * unempW;
   com -= cong * DEMAND.CONGESTION_PENALTY * 0.55;
   com += landD * 0.5;
   // 失业多 = 有富余劳动力 -> 商业/工业愿意扩张并招人（自愈：岗位追人口）
-  const spare = Math.max(0, (st.unemployment || 0) - 0.10);
-  com += Math.min(0.30, spare * 0.65);
+  const spare = Math.max(0, (st.unemployment || 0) - 0.08);
+  com += Math.min(0.30, spare * 0.9);
 
-  // 工业：生产商品，工业岗位目标约为人口的 28%
+  // 工业：生产商品，工业岗位目标约为人口的 38%
   let ind = DEMAND.IND_BASE;
   ind += Math.min(1, pop / 700) * 0.30;
-  ind += indJobs < pop * 0.28 ? 0.26 : -0.06;
+  ind += indJobs < pop * 0.38 ? 0.26 : -0.08;
   ind -= tax.ind * DEMAND.TAX_PENALTY;
   ind -= cong * DEMAND.CONGESTION_PENALTY * 0.35;
   ind += landD * 0.25;
-  ind += Math.min(0.30, spare * 0.65);
+  ind += Math.min(0.30, spare * 0.9);
 
   const clamp = (v) => Math.max(-1, Math.min(1, v));
   city.demand = { res: clamp(res), com: clamp(com), ind: clamp(ind) };
