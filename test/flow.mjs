@@ -16,7 +16,7 @@ function check(name, cond, extra = '') {
 // ---------------------------------------------------------------- 1. 搭建城市
 const c = new City({ name: '出行链测试' });
 const rd = [], rs = [], cm = [], ind = [];
-for (let x = 10; x < 32; x++) { rd.push(T(x, 16)); rd.push(T(x, 22)); }
+for (let x = 0; x < 32; x++) { rd.push(T(x, 16)); rd.push(T(x, 22)); }
 for (let z = 16; z <= 22; z++) rd.push(T(20, z));
 for (let x = 11; x < 31; x++) { rs.push(T(x, 17)); cm.push(T(x, 21)); ind.push(T(x, 23)); }
 c.buildRoad(rd, 1);
@@ -25,6 +25,7 @@ c.zoneTiles(cm, 'com');
 c.zoneTiles(ind, 'ind');
 c.placeService(T(8, 12), 'power');
 c.placeService(T(36, 36), 'water');
+c.addEntrance(T(0, 16));   // 高速出入口：人口只能从这里进来
 
 // 跑 30 小时让建筑长出来
 for (let h = 0; h < 30; h++) {
@@ -137,6 +138,7 @@ for (const ti of jamTiles) {
 for (const eid of jamEdges) c.net.edges[eid].congestion = 1;
 
 const popBefore = c.stats.population, jobsBefore = c.stats.jobs;
+const comJobsBefore = c.tiles[comTile].jobs;
 const happyBefore = c.stats.happiness;
 c.updateEfficiency();
 check('工业效率被拥堵拉低', c.stats.effIndustrial < 0.5, '工业效率 ' + c.stats.effIndustrial.toFixed(2));
@@ -144,14 +146,31 @@ check('商业效率被拥堵拉低', c.stats.effCommercial < 0.5, '商业效率 
 check('商业效率低于倒闭阈值', c.stats.effCommercial < EFFICIENCY.CLOSE_THRESHOLD,
   '阈值 ' + EFFICIENCY.CLOSE_THRESHOLD);
 c.refreshAggregates();
-check('人口因拥堵下降', c.stats.population < popBefore, popBefore + ' -> ' + c.stats.population);
-check('岗位因拥堵下降', c.stats.jobs < jobsBefore, jobsBefore + ' -> ' + c.stats.jobs);
+check('同一建筑的岗位因拥堵下降', c.tiles[comTile].jobs < comJobsBefore,
+  comJobsBefore + ' -> ' + c.tiles[comTile].jobs);
+// 新因果链：拥堵 -> 效率下降 -> 幸福度下降 -> 迁出 -> 人口下降
+for (let h = 0; h < 40; h++) {
+  for (let m = 0; m < 60; m++) {
+    c.advance(1); c.stepTraffic(4);
+    // 整片区域交通瘫痪（交通采样会重算拥堵，所以每分钟重新压满）
+    c.traffic.stats.congestion = 100;
+    for (const eid of jamEdges) c.net.edges[eid].congestion = 1;
+  }
+  c.updateEfficiency();
+  c.updateHappiness();
+}
+check('人口因拥堵（幸福度下降 -> 迁出）而下降', c.stats.population < popBefore,
+  popBefore + ' -> ' + c.stats.population + '（迁出 ' + c.demography.emigrants + ' 人）');
+check('岗位总量没有因拥堵而虚增', c.stats.jobs <= jobsBefore * 1.6, jobsBefore + ' -> ' + c.stats.jobs);
 
 // 商业倒闭
 const levelBefore = c.tiles[comTile].level;
 c.demand.com = 0;
 let closed = false;
 for (let i = 0; i < 400 && !closed; i++) {
+  c.traffic.stats.congestion = 100;
+  for (const eid of jamEdges) c.net.edges[eid].congestion = 1;
+  c.updateEfficiency();
   c.updateGrowth();
   if (c.tiles[comTile].level < levelBefore) closed = true;
 }
