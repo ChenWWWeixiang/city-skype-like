@@ -4,7 +4,7 @@
 //  同一条道路可以"上跨"另一条道路：地面层与高架层各自成网，
 //  仅在坡道端点（高程≈0）处合并，从而形成真正的立体交叉。
 // ============================================================================
-import { MAP, ELEV, SIGNAL } from './constants.js';
+import { MAP, ELEV, SIGNAL, TRAFFIC } from './constants.js';
 
 export const DIRS = [
   { dx: 0, dz: -1, bit: 1, name: 'N', opp: 16, axis: 'z', ang: 0 },
@@ -38,7 +38,8 @@ function collectLayers(tiles) {
   for (let i = 0; i < tiles.length; i++) {
     const t = tiles[i];
     const idxs = [];
-    if (t.road) { idxs.push(list.length); list.push({ tile: i, type: t.road, h: 0, layer: 0, mask: 0 }); }
+    // 地面层的高度 = 路面高程（随地形起伏；桥面 / 隧道也在这里）
+    if (t.road) { idxs.push(list.length); list.push({ tile: i, type: t.road, h: t.roadH || 0, layer: 0, mask: 0 }); }
     if (t.over) { idxs.push(list.length); list.push({ tile: i, type: t.over, h: t.h || 0, layer: 1, mask: 0 }); }
     if (idxs.length) at.set(i, idxs);
   }
@@ -48,8 +49,8 @@ function collectLayers(tiles) {
 /** 两个层格点能否直接相连 */
 function canConnect(a, b) {
   if (a.layer === b.layer) return Math.abs(a.h - b.h) <= ELEV.MAX_RAMP;
-  // 跨层仅在坡道落地处连通
-  return a.h <= 0.6 && b.h <= 0.6;
+  // 跨层仅在坡道落地处连通（两层路面高度一致）
+  return Math.abs(a.h - b.h) <= 0.6;
 }
 
 export function computeMasks(tiles) {
@@ -117,7 +118,7 @@ export function buildNetwork(tiles, roadDefs) {
     groupOf[i] = g.id;
     for (let k = 0; k < list.length; k++) {
       const b = list[k];
-      if (k !== i && b.tile === a.tile && b.layer !== a.layer && a.h <= 0.6 && b.h <= 0.6) {
+      if (k !== i && b.tile === a.tile && b.layer !== a.layer && Math.abs(a.h - b.h) <= 0.6) {
         groupOf[k] = g.id;
         g.layerTiles.push(k);
         g.mask |= b.mask;
@@ -288,6 +289,10 @@ export function buildNetwork(tiles, roadDefs) {
       arc.vehicles = [];
       arc.congestion = 0;
       arc.axis = arc.poly.length > 1 ? dominantAxis(arc.poly) : 'z';
+      // 弯道限速：拐弯越急，能跑的速度越低（真实道路就是这样）
+      const turn = maxTurnAngle(arc.poly);
+      arc.turnAngle = turn;
+      arc.curveLimit = turn > TRAFFIC.CURVE_ANGLE ? arc.v0 * TRAFFIC.CURVE_SPEED : arc.v0;
       arcs.push(arc);
     }
     edge.forwardArc = forward.id;
@@ -367,18 +372,34 @@ function dominantAxis(poly) {
   return dx > dz ? 'x' : 'z';
 }
 
+/** 折线上最大的转角（弧度）—— 用来判断是不是「急弯」 */
+function maxTurnAngle(poly) {
+  let m = 0;
+  for (let i = 1; i < poly.length - 1; i++) {
+    const a1 = Math.atan2(poly[i].x - poly[i - 1].x, poly[i].z - poly[i - 1].z);
+    const a2 = Math.atan2(poly[i + 1].x - poly[i].x, poly[i + 1].z - poly[i].z);
+    let d = a2 - a1;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    const ad = Math.abs(d);
+    if (ad > m) m = ad;
+  }
+  return m;
+}
+
 function edgePoly(edge, nodes, tiles) {
   const a = nodes[edge.nodes[0]], b = nodes[edge.nodes[1]];
-  const pts = [{ x: a.wx, z: a.wz, y: edge.layer === 1 ? (tiles[edge.tiles[0]].h || 0) : 0 }];
+  const yOf = (ti) => (edge.layer === 1 ? (tiles[ti].h || 0) : (tiles[ti].roadH || 0));
+  const pts = [{ x: a.wx, z: a.wz, y: yOf(edge.tiles[0]) }];
   for (let k = 1; k < edge.tiles.length - 1; k++) {
     const ti = edge.tiles[k];
     pts.push({
       x: worldX(ti % MAP.SIZE), z: worldZ(Math.floor(ti / MAP.SIZE)),
-      y: edge.layer === 1 ? (tiles[ti].h || 0) : 0,
+      y: yOf(ti),
     });
   }
   const last = edge.tiles[edge.tiles.length - 1];
-  pts.push({ x: b.wx, z: b.wz, y: edge.layer === 1 ? (tiles[last].h || 0) : 0 });
+  pts.push({ x: b.wx, z: b.wz, y: yOf(last) });
   return pts;
 }
 

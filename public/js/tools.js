@@ -19,7 +19,7 @@ export class Tools {
     this.tool = 'select';
     this.opt = {
       roadType: 1, zone: 'res', service: 'police', overlay: 'none',
-      elevated: false, curvature: 0.0,
+      elevated: false, tunnel: false, curvature: 0.0,
     };
     this.dragging = false;
     this.startTile = -1;
@@ -58,9 +58,18 @@ export class Tools {
     this.ndc.x = ((e.clientX - r.left) / r.width) * 2 - 1;
     this.ndc.y = -((e.clientY - r.top) / r.height) * 2 + 1;
     this.ray.setFromCamera(this.ndc, this.camera);
-    if (!this.ray.ray.intersectPlane(this.plane, this.hit)) return -1;
-    const x = Math.floor((this.hit.x + HALF) / MAP.TILE);
-    const z = Math.floor((this.hit.z + HALF) / MAP.TILE);
+    let px = null, pz = null;
+    // 优先与「地形网格」求交 —— 地形有起伏时，纯平面拾取会算错格子
+    if (this.ground) {
+      const hits = this.ray.intersectObject(this.ground, false);
+      if (hits.length) { px = hits[0].point.x; pz = hits[0].point.z; }
+    }
+    if (px === null) {
+      if (!this.ray.ray.intersectPlane(this.plane, this.hit)) return -1;
+      px = this.hit.x; pz = this.hit.z;
+    }
+    const x = Math.floor((px + HALF) / MAP.TILE);
+    const z = Math.floor((pz + HALF) / MAP.TILE);
     if (x < 0 || z < 0 || x >= S || z >= S) return -1;
     return idx(x, z);
   }
@@ -127,8 +136,39 @@ export class Tools {
     const ax = a % S, az = Math.floor(a / S);
     const bx = b % S, bz = Math.floor(b / S);
     const dx = Math.abs(bx - ax), dz = Math.abs(bz - az);
+    // --- 节点吸附：终点附近已有道路时，自动贴上去接成干净的路口 ---
+    const node = this.findRoadNear(b, 1);
+    if (node >= 0) {
+      const nx = node % S, nz = Math.floor(node / S);
+      if (dx >= dz && Math.abs(nz - az) <= 1) {
+        const sx = bx >= nx ? nx - 1 : nx + 1;
+        if (sx >= 0 && sx < S) return idx(sx, az);
+      } else if (dz > dx && Math.abs(nx - ax) <= 1) {
+        const sz = bz >= nz ? nz - 1 : nz + 1;
+        if (sz >= 0 && sz < S) return idx(ax, sz);
+      }
+    }
     if (dx >= dz) return idx(clamp(bx), az);   // 水平直线
     return idx(ax, clamp(bz));                  // 垂直直线
+  }
+
+  /** 附近是否已有道路（节点吸附用） */
+  findRoadNear(tile, radius = 1) {
+    const st = this.state;
+    if (!st) return -1;
+    const ax = tile % S, az = Math.floor(tile / S);
+    let best = -1, bestD = radius + 0.001;
+    for (let dz = -radius; dz <= radius; dz++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const x = ax + dx, z = az + dz;
+        if (x < 0 || z < 0 || x >= S || z >= S) continue;
+        const i = idx(x, z);
+        if (!st.road[i] && !(st.over && st.over[i])) continue;
+        const d = Math.hypot(dx, dz);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+    }
+    return best;
   }
 
   onUp() {
@@ -140,7 +180,8 @@ export class Tools {
     if (!tiles.length) return;
     if (this.tool === 'road') {
       this.net.send({
-        name: 'road', tiles, roadType: this.opt.roadType, elevated: !!this.opt.elevated,
+        name: 'road', tiles, roadType: this.opt.roadType,
+        elevated: !!this.opt.elevated, tunnel: !!this.opt.tunnel,
       });
     } else if (this.tool === 'zone') {
       this.net.send({ name: 'zone', tiles, zone: this.opt.zone });

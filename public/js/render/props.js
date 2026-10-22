@@ -72,7 +72,8 @@ export class PropRenderer {
       const yaw = x === 0 ? -Math.PI / 2 : x === MAP.SIZE - 1 ? Math.PI / 2
         : z === 0 ? Math.PI : 0;
       q.setFromAxisAngle(this._up, yaw);
-      p.set(wx, (state.h && state.h[i]) || 0, wz);
+      // 出入口牌立在路面上
+      p.set(wx, (state.roadH && state.roadH[i]) || (state.height && state.height[i]) || 0, wz);
       s.set(1, 1, 1);
       m.compose(p, q, s);
       this.gates.setMatrixAt(n, m);
@@ -100,7 +101,8 @@ export class PropRenderer {
       const wz = (z + 0.5) * MAP.TILE - HALF + (hash2(x, z, 9) - 0.5) * 9;
       const sc = 0.75 + hash2(x, z, 11) * 0.75;
       q.setFromAxisAngle(this._up, hash2(x, z, 13) * Math.PI * 2);
-      p.set(wx, 0, wz);
+      // 树要长在地形上
+      p.set(wx, (state.height && state.height[i]) || 0, wz);
       s.set(sc, sc * (0.85 + hash2(x, z, 17) * 0.4), sc);
       m.compose(p, q, s);
       this.trees.setMatrixAt(n, m);

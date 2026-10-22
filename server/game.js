@@ -35,7 +35,8 @@ export class Game {
       out.push(i, t.zone, t.level, t.road, city.net.masks[i], t.service,
         Math.round(t.land), t.power ? 1 : 0, t.water ? 1 : 0, t.terrain,
         Math.round((t.h || 0) * 10) / 10, t.lt || 0, t.over || 0, city.net.overMasks[i],
-        t.olt || 0);
+        t.olt || 0,
+        Math.round((t.roadH || 0) * 10) / 10, t.bridge || 0, t.tunnel || 0);
     };
     if (this.dirtyAll) {
       for (let i = 0; i < city.tiles.length; i++) push(i);
@@ -122,6 +123,13 @@ export class Game {
         effResidential: st.effResidential === undefined ? 1 : st.effResidential,
         waterCoverage: Math.round(st.waterCoverage), income: Math.round(st.income),
         expense: Math.round(st.expense), comJobs: st.comJobs || 0, indJobs: st.indJobs || 0,
+        // 实时市政收支（每游戏小时）
+        netHour: Math.round((st.netHour || 0) * 10) / 10,
+        incomeMin: Math.round((st.incomeMin || 0) * 100) / 100,
+        expenseMin: Math.round((st.expenseMin || 0) * 100) / 100,
+        netMin: Math.round((st.netMin || 0) * 100) / 100,
+        roadUpkeep: Math.round((st.roadUpkeep || 0) * 10) / 10,
+        svcUpkeep: Math.round((st.svcUpkeep || 0) * 10) / 10,
       },
       trafficRate: TIME.TRAFFIC_SPEEDS[c.speed] || 0,   // 交通秒/真实秒
       entrances: c.entrances || [],        // 高速出入口（对外连接）
@@ -130,7 +138,10 @@ export class Game {
         pop: c.demography.pop, housed: c.demography.housed, waiting: c.demography.waiting,
         births: c.demography.births, deaths: c.demography.deaths,
         immigrants: c.demography.immigrants, emigrants: c.demography.emigrants,
+        rate: c.demography.rate,
       },
+      // 财政结算步长（游戏分钟）
+      settleMinutes: c.settleMinutes,
       // 车队（守恒：路上 + 车库 + 特种）
       fleet: {
         total: c.traffic.fleet.total, cars: c.traffic.fleet.cars,
@@ -153,6 +164,8 @@ export class Game {
       },
       lab: this.headerExtra ? this.headerExtra() : undefined,
       ledger: c.ledger.slice(-24),
+      // 地形高度图（只在完整状态里发一次；之后靠瓦片增量里的 roadH 更新）
+      height: full && c.height ? Array.from(c.height, (v) => Math.round(v * 100) / 100) : undefined,
       diffs: this.collectDiffs(),
     };
   }
@@ -203,8 +216,16 @@ export class Game {
     };
     switch (cmd.action) {
       case 'road': {
-        const res = c.buildRoad(cmd.tiles || [], cmd.roadType || 1, { elevated: !!cmd.elevated });
+        const res = c.buildRoad(cmd.tiles || [], cmd.roadType || 1, {
+          elevated: !!cmd.elevated,
+          tunnel: !!cmd.tunnel,
+        });
         if (res.ok) this.markDirtyAll();
+        reply(res);
+        break;
+      }
+      case 'settle': {
+        const res = c.setSettleStep(cmd.minutes);
         reply(res);
         break;
       }

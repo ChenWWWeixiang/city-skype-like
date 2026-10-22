@@ -91,7 +91,11 @@ export class RoadRenderer {
         map: plainTexture(def.color), vertexColors: true, roughness: 0.95, metalness: 0.02,
         polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
       });
-      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), [matPlain, matMarked, matDiag]);
+      // 路基（路缘）：把路面和地形的接缝盖住，看起来像有路肩
+      const matCurb = new THREE.MeshStandardMaterial({
+        color: 0x6b6f74, vertexColors: true, roughness: 0.98, metalness: 0,
+      });
+      const mesh = new THREE.Mesh(new THREE.BufferGeometry(), [matPlain, matMarked, matDiag, matCurb]);
       mesh.receiveShadow = true;
       mesh.frustumCulled = false;
       this.group.add(mesh);
@@ -131,6 +135,7 @@ export class RoadRenderer {
       const hw = def.width / 2;
       const pos = [], uv = [], col = [], nor = [];
       const idxCenter = [], idxStrip = [], idxDiag = [];
+      const idxCurb = [];
       const ranges = [], tiles = [];
       let vbase = 0;
 
@@ -144,6 +149,16 @@ export class RoadRenderer {
           col.push(1, 1, 1);
         }
         list.push(n, n + 2, n + 1, n, n + 3, n + 2);
+        vbase += 4;
+      };
+
+      // 路缘竖面（只在没有连接的方向上补）
+      const pushCurb = (x0, z0, x1, z1, yTop) => {
+        const yBot = yTop - 0.55;
+        const n = vbase;
+        pos.push(x0, yTop, z0, x1, yTop, z1, x1, yBot, z1, x0, yBot, z0);
+        for (let k = 0; k < 4; k++) { nor.push(0, 1, 0); col.push(1, 1, 1); uv.push(0, 0); }
+        idxCurb.push(n, n + 2, n + 1, n, n + 3, n + 2);
         vbase += 4;
       };
 
@@ -172,9 +187,12 @@ export class RoadRenderer {
       // 地面层 + 高架层分别生成几何（高架层带高度）
       const instances = [];
       for (let i = 0; i < state.road.length; i++) {
-        if (state.road[i] === key) instances.push({ i, mask: state.mask[i], h: 0 });
+        // 地面层：路面高度 = 地形高程（桥面 / 隧道也在这里）
+        if (state.road[i] === key) {
+          instances.push({ i, mask: state.mask[i], h: (state.roadH && state.roadH[i]) || 0, layer: 0 });
+        }
         if (state.over && state.over[i] === key) {
-          instances.push({ i, mask: state.overMask[i], h: state.h[i] || 0 });
+          instances.push({ i, mask: state.overMask[i], h: state.h[i] || 0, layer: 1 });
         }
       }
       for (const inst of instances) {
@@ -190,12 +208,19 @@ export class RoadRenderer {
           const nx = x + dx, nz = z + dz;
           if (nx < 0 || nz < 0 || nx >= MAP.SIZE || nz >= MAP.SIZE) return inst.h;
           const j = nz * MAP.SIZE + nx;
-          if (inst.h > 0) return (state.h[j] || 0) + 0.04;
-          return 0.04;
+          const nh = inst.layer === 1 ? (state.h[j] || 0) : ((state.roadH && state.roadH[j]) || 0);
+          return nh + 0.04;
         };
         const hN = nH(0, -1), hS = nH(0, 1), hE = nH(1, 0), hW = nH(-1, 0);
 
         rect(wx - hw, wx + hw, wz - hw, wz + hw, 'x', idxCenter, y, y);
+        // 地面层补路缘（高架层悬空，不需要）
+        if (inst.layer === 0) {
+          if (!(m & 1)) pushCurb(wx - hw, wz - hw, wx + hw, wz - hw, y - 0.04);
+          if (!(m & 16)) pushCurb(wx - hw, wz + hw, wx + hw, wz + hw, y - 0.04);
+          if (!(m & 64)) pushCurb(wx - hw, wz - hw, wx - hw, wz + hw, y - 0.04);
+          if (!(m & 4)) pushCurb(wx + hw, wz - hw, wx + hw, wz + hw, y - 0.04);
+        }
         for (const d of D8) {
           if (!(m & d.bit)) continue;
           if (d.dx === 0 || d.dz === 0) {
@@ -226,13 +251,16 @@ export class RoadRenderer {
         ranges.push([start, vbase]);
         tiles.push(i);
 
-        // 桥墩
-        const hh = inst.h;
-        if (hh > 2.5 && pillarCount < this.pillars.instanceMatrix.count) {
-          pillarM.makeScale(1, hh, 1);
-          pillarM.setPosition(wx, 0, wz);
-          this.pillars.setMatrixAt(pillarCount, pillarM);
-          pillarCount++;
+        // 桥墩：地面层的「桥」要架在河床上；高架层要架在地面上
+        if (pillarCount < this.pillars.instanceMatrix.count) {
+          const ground = (state.height && state.height[i]) || 0;
+          const span = inst.h - ground;
+          if (span > 2.2) {
+            pillarM.makeScale(1, span, 1);
+            pillarM.setPosition(wx, ground, wz);
+            this.pillars.setMatrixAt(pillarCount, pillarM);
+            pillarCount++;
+          }
         }
       }
 
@@ -243,10 +271,11 @@ export class RoadRenderer {
       ng.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
       ng.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
       ng.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-      ng.setIndex(idxCenter.concat(idxStrip, idxDiag));
+      ng.setIndex(idxCenter.concat(idxStrip, idxDiag, idxCurb));
       ng.addGroup(0, idxCenter.length, 0);
       ng.addGroup(idxCenter.length, idxStrip.length, 1);
       ng.addGroup(idxCenter.length + idxStrip.length, idxDiag.length, 2);
+      ng.addGroup(idxCenter.length + idxStrip.length + idxDiag.length, idxCurb.length, 3);
       this.meshes[key].geometry = ng;
       this.tileRanges[key] = ranges;
       this.tilesOf[key] = tiles;
@@ -276,7 +305,7 @@ export class RoadRenderer {
       const wz = (z + 0.5) * T - HALF;
       const def = ROAD_DEFS[roadType];
       const m8 = layer === 1 ? state.overMask[i] : state.mask[i];
-      const yBase = (layer === 1 ? (state.h[i] || 0) : 0) + 0.07;
+      const yBase = (layer === 1 ? (state.h[i] || 0) : ((state.roadH && state.roadH[i]) || 0)) + 0.07;
       // 道路可能有多个方向（十字路口既有东西向又有南北向）
       // 车道色带必须按「每个存在的方向」各画一遍，否则路口的色带会画错方向。
       const alongX = (m8 & 4) || (m8 & 64);

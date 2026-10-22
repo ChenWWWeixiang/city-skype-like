@@ -17,7 +17,7 @@ function check(name, cond, extra = '') {
 
 // ---------------------------------------------------------------- 1. 路网
 console.log('\n[1] 路网抽取');
-const c = new City({ name: '冒烟测试' });
+const c = new City({ name: '冒烟测试', flat: true });
 const road = [], res = [], com = [], ind = [];
 for (let x = 0; x < 34; x++) { road.push(T(x, 20)); road.push(T(x, 26)); }
 for (let z = 20; z <= 26; z++) road.push(T(16, z));
@@ -28,13 +28,13 @@ check('路网连通（单一连通分量）', c.net.components === 1, c.net.comp
 check('有向路段成对生成', c.net.arcs.length === c.net.edges.length * 2);
 check('分区规划', c.zoneTiles(res, 'res').ok && c.zoneTiles(com, 'com').ok && c.zoneTiles(ind, 'ind').ok);
 check('发电厂', c.placeService(T(10, 15), 'power').ok);
-check('水塔', c.placeService(T(35, 35), 'water').ok);
+check('水塔', c.placeService(T(30, 32), 'water').ok);
 // 高速出入口：城市与外界的唯一通道 —— 没有它就没有外来人口
 check('高速出入口', c.addEntrance(T(0, 20)).ok);
 
 // ---------------------------------------------------------------- 1b. 新特性
 console.log('\n[1b] 弧度 / 坡度 / 车道 / 信号灯');
-const c2 = new City({ name: '新特性' });
+const c2 = new City({ name: '新特性', flat: true });
 // 斜向道路
 const diag = [];
 for (let i = 0; i < 10; i++) diag.push(T(10 + i, 10 + i));
@@ -108,7 +108,7 @@ check('路边停放车辆已生成', (c.traffic.parkedCars || []).length > 0, (c
 // ---------------------------------------------------------------- 4. 经济
 console.log('\n[4] 经济与财政');
 for (let day = 0; day < 35; day++) {
-  for (let m = 0; m < 1440; m++) { c.advance(1); c.stepTraffic(60); }
+  for (let m = 0; m < 1440; m++) { c.advance(1); }   // 财政段不需要跑交通（纯经济）
 }
 check('月度结算发生', c.ledger.length >= 1, c.ledger.length + ' 条账目');
 check('税收收入 > 0', c.stats.income > 0, Math.round(c.stats.income) + ' §');

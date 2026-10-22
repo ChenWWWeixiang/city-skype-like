@@ -136,15 +136,24 @@ export class BuildingRenderer {
       const x = i % MAP.SIZE, z = Math.floor(i / MAP.SIZE);
       const spec = SPECS[zone][lv - 1];
       const r = hash2(x, z, 77);
-      const rot = Math.floor(r * 4) * Math.PI / 2;
+      // 不规整地块：斜向道路斜切过角上（或被三面道路围住）
+      // -> 只能盖小楼/歪楼（真实的城市里转角地块就是这样不规则）
+      const mk = state.mask ? state.mask[i] : 0;
+      const diag = !!(mk & 0b10000010) || !!(mk & 0b00101000);
+      const orth = (mk & 1 ? 1 : 0) + (mk & 4 ? 1 : 0) + (mk & 16 ? 1 : 0) + (mk & 64 ? 1 : 0);
+      const odd = diag || orth >= 3;
+      const shrink = diag ? 0.62 : (orth >= 3 ? 0.78 : 1);
+      const rot = Math.floor(r * 4) * Math.PI / 2 + (diag ? Math.PI / 4 : 0);
       const jx = (hash2(x, z, 13) - 0.5) * 1.6;
       const jz = (hash2(x, z, 29) - 0.5) * 1.6;
       const wx = (x + 0.5) * MAP.TILE - HALF + jx;
       const wz = (z + 0.5) * MAP.TILE - HALF + jz;
       const h = spec.h * (0.85 + hash2(x, z, 91) * 0.32);
+      const hScaled = h * (diag ? 0.72 : 1);
       q.setFromAxisAngle(up, rot);
-      pos.set(wx, 0, wz);
-      scl.set(spec.w, h, spec.d);
+      // 建筑落在地形上（地形有起伏时不会陷进地里或浮在空中）
+      pos.set(wx, (state.height && state.height[i]) || 0, wz);
+      scl.set(spec.w * shrink, hScaled, spec.d * shrink);
       m.compose(pos, q, scl);
       const mesh = this.meshes[zone][lv - 1];
       const n = counts[zone][lv - 1];
@@ -156,8 +165,8 @@ export class BuildingRenderer {
       counts[zone][lv - 1] = n + 1;
       if (zone === 1 && lv === 1 && roofCount < this.roofs.instanceMatrix.count) {
         const rh = 3.2 + hash2(x, z, 55) * 1.6;
-        pos.set(wx, h, wz);
-        scl.set(spec.w * 0.92, rh, spec.d * 0.92);
+        pos.set(wx, ((state.height && state.height[i]) || 0) + hScaled, wz);
+        scl.set(spec.w * 0.92 * shrink, rh * (diag ? 0.72 : 1), spec.d * 0.92 * shrink);
         m.compose(pos, q, scl);
         this.roofs.setMatrixAt(roofCount, m);
         roofColor.setHSL(0.03 + hash2(x, z, 63) * 0.06, 0.35, 0.28 + hash2(x, z, 71) * 0.14);

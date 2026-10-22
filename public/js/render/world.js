@@ -99,11 +99,12 @@ export function createScene() {
 
   // 地面
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(WORLD, WORLD, 1, 1),
+    new THREE.PlaneGeometry(WORLD, WORLD, MAP.SIZE, MAP.SIZE),
     new THREE.MeshStandardMaterial({ map: grassTexture(), roughness: 0.96, metalness: 0 })
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
+  ground.geometry.computeVertexNormals();
   scene.add(ground);
 
   // 水面（略高于地面）
@@ -135,6 +136,50 @@ export function createScene() {
   scene.add(new THREE.AmbientLight(0xffffff, 0.18));
 
   return { scene, sun, ground, water, sky };
+}
+
+/**
+ * 地形网格：把地形高程（山丘 / 河谷 / 隧道堑壕）反映到地表的顶点上。
+ * 隧道那一格的地表会被「挖低」到路面高度，于是山体上出现一条真实的隧道沟槽。
+ */
+export function rebuildTerrain(groundMesh, state) {
+  const geo = groundMesh.geometry;
+  const pos = geo.getAttribute('position');
+  const S = MAP.SIZE;
+  const h = state.height;
+  // 有效地表高度：隧道格要挖到路面以下
+  const eff = new Float32Array(S * S);
+  for (let i = 0; i < S * S; i++) {
+    let v = h ? (h[i] || 0) : 0;
+    if (state.tunnel && state.tunnel[i]) {
+      const rh = state.roadH ? (state.roadH[i] || 0) : v;
+      if (rh < v) v = rh - 0.12;
+    }
+    eff[i] = v;
+  }
+  const tileH = (x, z) => {
+    if (x < 0) x = 0; else if (x > S - 1) x = S - 1;
+    if (z < 0) z = 0; else if (z > S - 1) z = S - 1;
+    return eff[z * S + x];
+  };
+  const sample = (gx, gz) => {
+    const x = gx - 0.5, z = gz - 0.5;
+    const x0 = Math.floor(x), z0 = Math.floor(z);
+    const fx = x - x0, fz = z - z0;
+    const a = tileH(x0, z0) * (1 - fx) + tileH(x0 + 1, z0) * fx;
+    const b = tileH(x0, z0 + 1) * (1 - fx) + tileH(x0 + 1, z0 + 1) * fx;
+    return a * (1 - fz) + b * fz;
+  };
+  for (let i = 0; i < pos.count; i++) {
+    // 网格本体在 XY 平面上（靠 mesh.rotation 摆平），局部 +Y -> 世界 -Z
+    const gx = (pos.getX(i) + HALF) / MAP.TILE;
+    const gz = (HALF - pos.getY(i)) / MAP.TILE;
+    // 局部 Z 轴 = 世界高度（网格靠 mesh.rotation.x = -90° 摆平）
+    pos.setZ(i, sample(gx, gz));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
 }
 
 /** 依据地形数据重建水面实例 */

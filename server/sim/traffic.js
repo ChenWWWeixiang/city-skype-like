@@ -1281,7 +1281,12 @@ export class TrafficSim {
       let gradeFactor = 1 - ELEV.GRADE_SPEED_PENALTY * Math.max(0, grade) / 0.1
         + 0.25 * Math.max(0, -grade);
       gradeFactor = Math.max(0.45, Math.min(1.15, gradeFactor));
-      const v0 = arc.v0 * this._vehDef(veh.type).speedFactor * gradeFactor * (veh.maxSpeed || 1);
+      // 限速 = min(道路等级限速, 弯道限速, 路口转弯限速)
+      const roadLimit = Math.min(arc.v0, arc.curveLimit || arc.v0);
+      if (veh.turnLimit && veh.dist >= TRAFFIC.INTERSECTION_ZONE) veh.turnLimit = 0;
+      const turnLimit = veh.turnLimit || Infinity;
+      const v0 = Math.min(roadLimit, turnLimit) * this._vehDef(veh.type).speedFactor
+        * gradeFactor * (veh.maxSpeed || 1);
       let accel = 0;
       const obstacleGap = Math.min(gap, stopDist);
       if (obstacleGap < Infinity) {
@@ -1338,6 +1343,17 @@ export class TrafficSim {
         const first = this._minDist(nextArc.laneVehicles[lane]);
         if (node.passing < SIGNAL.NODE_CAPACITY && first > TRAFFIC.ENTRY_GAP + veh.len &&
             this._canGo(node, nextArc.axis)) {
+          // --- 转弯减速：方向变化越大，通过路口的速度越低 ---
+          const h0 = polyPoint(arc.poly, arc.length, arc.length).heading;
+          const h1 = polyPoint(nextArc.poly, 0, nextArc.length).heading;
+          let dh = h1 - h0;
+          while (dh > Math.PI) dh -= Math.PI * 2;
+          while (dh < -Math.PI) dh += Math.PI * 2;
+          const isTurn = Math.abs(dh) > TRAFFIC.TURN_ANGLE;
+          const limit = isTurn ? Math.min(nextArc.v0, nextArc.curveLimit || nextArc.v0) * TRAFFIC.TURN_SPEED
+            : Math.min(nextArc.v0, nextArc.curveLimit || nextArc.v0);
+          veh.v = Math.min(veh.v, limit);
+          veh.turnLimit = isTurn ? limit : 0;
           // 进入新路段前先释放上一个路口的通行权
           // （否则同一 tick 内连续通过两个路口会覆盖 nodeRelease，导致计数泄漏、路口永久堵塞）
           if (veh.nodeRelease) { veh.nodeRelease.passing--; veh.nodeRelease = null; }

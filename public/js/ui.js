@@ -55,6 +55,20 @@ export class UI {
       sl.addEventListener('input', () => { $('tax-' + k + '-v').textContent = sl.value + '%'; });
       sl.addEventListener('change', () => this.net.send({ name: 'tax', kind: k, value: +sl.value }));
     }
+    // 财政结算步长
+    const settle = $('settle-step');
+    if (settle) {
+      settle.addEventListener('input', () => {
+        const steps = (this.config && this.config.econ && this.config.econ.settleSteps) || [1, 5, 10, 30, 60];
+        const v = steps[Math.max(0, Math.min(steps.length - 1, +settle.value))];
+        $('settle-step-v').textContent = v + ' 分钟';
+      });
+      settle.addEventListener('change', () => {
+        const steps = (this.config && this.config.econ && this.config.econ.settleSteps) || [1, 5, 10, 30, 60];
+        const v = steps[Math.max(0, Math.min(steps.length - 1, +settle.value))];
+        this.net.send({ name: 'settle', minutes: v });
+      });
+    }
     // 工具栏
     $('toolbar').addEventListener('click', (e) => {
       const b = e.target.closest('.tool');
@@ -135,20 +149,38 @@ export class UI {
 
     // 财政页
     const b = this.budgetBreakdown();
-    $('b-income').textContent = money(st.income || 0);
-    $('b-road').textContent = money(-b.road);
-    $('b-svc').textContent = money(-b.service);
-    $('b-admin').textContent = money(-b.admin);
+    $('b-income').textContent = money(st.income || 0) + '/时';
+    $('b-road').textContent = money(-b.road) + '/时';
+    $('b-svc').textContent = money(-b.service) + '/时';
+    $('b-admin').textContent = money(-b.admin) + '/时';
     const netv = (st.income || 0) - (st.expense || 0);
     const netEl = $('b-net');
-    netEl.textContent = money(netv);
+    netEl.textContent = money(netv) + '/时';
     netEl.style.color = netv >= 0 ? 'var(--good)' : 'var(--bad)';
+    const netMin = st.netMin === undefined ? netv / 60 : st.netMin;
+    const nm = $('b-netmin');
+    nm.textContent = (netMin >= 0 ? '+' : '') + netMin.toFixed(2) + ' §/分';
+    nm.style.color = netMin >= 0 ? 'var(--good)' : 'var(--bad)';
+    // 结算步长
+    const steps = (this.config && this.config.settleSteps) || [1, 5, 10, 30, 60];
+    const curStep = state.settleMinutes || 10;
+    const sl = $('settle-step');
+    if (sl && document.activeElement !== sl) {
+      const idx = steps.indexOf(curStep);
+      sl.value = idx >= 0 ? idx : 2;
+    }
+    $('settle-step-v').textContent = curStep + ' 分钟';
+    const last = (state.ledger || [])[state.ledger.length - 1];
+    $('b-last').textContent = last
+      ? (last.net >= 0 ? '+' : '') + fmt(last.net) + ' §　余额 ' + fmt(last.funds)
+      : '—';
     const led = $('ledger');
     led.innerHTML = '';
     for (const e of (state.ledger || []).slice(-14).reverse()) {
       const row = document.createElement('div');
       row.className = e.net >= 0 ? 'pos' : 'neg';
-      row.innerHTML = '<span>' + e.date.year + '.' + e.date.month + '</span><b>' +
+      row.innerHTML = '<span>' + e.date.month + '/' + e.date.day + ' ' +
+        String(e.date.hour).padStart(2, '0') + ':' + String(e.date.minute).padStart(2, '0') + '</span><b>' +
         (e.net >= 0 ? '+' : '') + fmt(e.net) + ' §</b>';
       led.appendChild(row);
     }
@@ -183,6 +215,24 @@ export class UI {
     // 民生页：人口来源 / 车队 / 事件
     const dem = state.demography || {};
     const fl = state.fleet || {};
+    // 人口变化速率（每游戏小时）—— 人口随时在变，要一眼看出涨跌
+    const rate = dem.rate || {};
+    const rIn = (rate.immig || 0) + (rate.birth || 0);
+    const rOut = (rate.death || 0) + (rate.emig || 0);
+    const rNet = rate.net === undefined ? (rIn - rOut) : rate.net;
+    const rateEl = $('c-rate');
+    rateEl.textContent = (rNet >= 0 ? '+' : '') + (Math.round(rNet * 10) / 10) + ' 人/时';
+    rateEl.style.color = rNet >= 0 ? 'var(--good)' : 'var(--bad)';
+    $('c-rate-in').textContent = '+' + (Math.round(rIn * 10) / 10);
+    $('c-rate-in').style.color = rIn > 0 ? 'var(--good)' : 'var(--muted)';
+    $('c-rate-out').textContent = '-' + (Math.round(rOut * 10) / 10);
+    $('c-rate-out').style.color = rOut > 0 ? 'var(--bad)' : 'var(--muted)';
+    // 顶栏人口后面的小箭头
+    const pr = $('pop-rate');
+    if (pr) {
+      pr.textContent = (rNet >= 0 ? '▲' : '▼') + Math.abs(Math.round(rNet * 10) / 10) + '/时';
+      pr.style.color = rNet >= 0 ? 'var(--good)' : 'var(--bad)';
+    }
     $('c-imm').textContent = fmt(dem.immigrants || 0);
     $('c-birth').textContent = fmt(dem.births || 0);
     $('c-death').textContent = fmt(dem.deaths || 0);
@@ -217,7 +267,8 @@ export class UI {
       const r = state.road[i];
       if (r === 1) street++; else if (r === 2) ave++; else if (r === 3) hwy++;
     }
-    const road = street * 4 + ave * 9 + hwy * 20;
+    const ru = (this.config && this.config.econ && this.config.econ.roadUpkeep) || { 1: 0.5, 2: 1.2, 3: 2.8 };
+    const road = street * ru[1] + ave * ru[2] + hwy * ru[3];
     let service = 0;
     if (this.config) {
       const byId = {};
@@ -227,7 +278,8 @@ export class UI {
         if (s && byId[s]) service += byId[s].upkeep;
       }
     }
-    return { road, service, admin: 320 };
+    const admin = (this.config && this.config.econ && this.config.econ.baseUpkeep) || 25;
+    return { road, service, admin };
   }
 
   // ------------------------------------------------------------ 工具选项
@@ -257,27 +309,58 @@ export class UI {
       const tip0 = document.createElement('div');
       tip0.className = 'muted';
       tip0.style.cssText = 'font-size:11px;line-height:1.5;margin:0 0 8px;max-width:196px';
-      tip0.textContent = '按住拖拽即可连续画路：默认自动吸附成水平/垂直直线（不会画歪）；' +
-        '按住 Shift 拖拽可画斜线，拖成弧形则用下方的曲率参数。';
+      tip0.innerHTML = '按住拖拽即可连续画路：默认<b>吸附成水平/垂直直线</b>，' +
+        '终点靠近已有道路会<b>自动接成路口</b>；按住 <b>Shift</b> 可画斜线，' +
+        '下方的<b>弯曲</b>参数能画出弧线。路面会<b>随地形起伏</b>（坡度上限 15%）。';
       box.appendChild(tip0);
-      add('道路类型', cfg.roads.map((r) => ({ key: r.id, name: r.name, cost: r.cost, color: '#8a8f96' })),
-        opt.roadType, (k) => { opt.roadType = k; });
-      // 高架
-      const h5 = document.createElement('h5');
-      h5.textContent = '立体交叉';
-      box.appendChild(h5);
-      const elev = document.createElement('div');
-      elev.className = 'opt' + (opt.elevated ? ' on' : '');
-      elev.innerHTML = '<i class="sw" style="background:#8f6fd0"></i>' +
-        '<span class="nm">高架道路</span><span class="pr">自动坡道</span>';
-      elev.addEventListener('click', () => {
-        opt.elevated = !opt.elevated;
-        this.renderToolOptions(tool, opt);
-      });
-      box.appendChild(elev);
+      // --- 道路类型：卡片式（CS2 风格）---
+      const hR = document.createElement('h5');
+      hR.textContent = '道路类型';
+      box.appendChild(hR);
+      const roadCards = document.createElement('div');
+      roadCards.className = 'opt-cards';
+      for (const r of cfg.roads) {
+        const d = document.createElement('div');
+        d.className = 'opt-card' + (r.id === opt.roadType ? ' on' : '');
+        const lanes = r.lanes || 2;
+        d.innerHTML = '<div class="rd-ico"><i></i><i></i><i></i><i></i></div>' +
+          '<div class="rd-nm">' + r.name + '</div>' +
+          '<div class="rd-sub">' + lanes + ' 车道 · ' + Math.round(r.v0 * 3.6) + ' km/h</div>' +
+          '<div class="rd-cost">§' + fmt(r.cost) + '</div>';
+        d.addEventListener('click', () => { opt.roadType = r.id; this.renderToolOptions(tool, opt); });
+        roadCards.appendChild(d);
+      }
+      box.appendChild(roadCards);
+      // --- 地面 / 高架 / 隧道：分段开关 ---
+      const hM = document.createElement('h5');
+      hM.textContent = '施工方式';
+      box.appendChild(hM);
+      const modes = [
+        { key: 'surface', name: '地面', tip: '贴着地面的普通道路' },
+        { key: 'elevated', name: '高架', tip: '架空的立体交叉（自带坡道）' },
+        { key: 'tunnel', name: '隧道', tip: '从山体内部穿过，路面在地下' },
+      ];
+      const modeRow = document.createElement('div');
+      modeRow.className = 'seg';
+      for (const m of modes) {
+        const b = document.createElement('button');
+        const active = (m.key === 'elevated' && opt.elevated) ||
+          (m.key === 'tunnel' && opt.tunnel) ||
+          (m.key === 'surface' && !opt.elevated && !opt.tunnel);
+        b.className = active ? 'on' : '';
+        b.textContent = m.name;
+        b.title = m.tip;
+        b.addEventListener('click', () => {
+          opt.elevated = m.key === 'elevated';
+          opt.tunnel = m.key === 'tunnel';
+          this.renderToolOptions(tool, opt);
+        });
+        modeRow.appendChild(b);
+      }
+      box.appendChild(modeRow);
       // 曲率
       const c5 = document.createElement('h5');
-      c5.textContent = '曲率';
+      c5.textContent = '弯曲（画弧线）';
       box.appendChild(c5);
       const cur = document.createElement('div');
       cur.className = 'slider';

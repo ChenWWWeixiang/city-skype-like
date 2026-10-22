@@ -26,7 +26,7 @@ function run(c, hours, label) {
 
 // ---------------------------------------------------------------- 1. 有出入口
 console.log('\n[1] 有高速出入口：人口由外来车辆 + 新生儿产生');
-const c = new City({ name: '守恒测试' });
+const c = new City({ name: '守恒测试', flat: true });
 const T0 = (x, z) => T(x, z);
 // 主干道 + 街区
 const rd = [];
@@ -79,7 +79,7 @@ check('车队规模与人口同向（人口涨、车队不缩）', c.stats.popul
 
 // ---------------------------------------------------------------- 3. 没有出入口
 console.log('\n[3] 没有高速出入口：不会凭空产生人口');
-const c2 = new City({ name: '无入口' });
+const c2 = new City({ name: '无入口', flat: true });
 c2.buildRoad(rd, 2);
 c2.zoneTiles(rs, 'res'); c2.zoneTiles(cm, 'com'); c2.zoneTiles(ind, 'ind');
 c2.placeService(T(12, 12), 'power');
@@ -90,7 +90,7 @@ check('无出入口时没有外来车', (c2.traffic.stats.external || 0) === 0, 
 
 // ---------------------------------------------------------------- 4. 特种车随建筑诞生
 console.log('\n[4] 特种车辆伴随特种建筑诞生');
-const c3 = new City({ name: '特种车' });
+const c3 = new City({ name: '特种车', flat: true });
 c3.buildRoad(rd, 2);
 const rp = c3.placeService(T(12, 12), 'police');
 check('警察局建成', rp.ok, rp.msg || '');
@@ -104,7 +104,7 @@ check('车队总数同步减少', c3.traffic.fleet.special === 2, '特种车 ' +
 
 // ---------------------------------------------------------------- 5. 车进建筑 = 不消失
 console.log('\n[5] 车到建筑后停进车库（不凭空消失）');
-const c4 = new City({ name: '进楼' });
+const c4 = new City({ name: '进楼', flat: true });
 c4.buildRoad(rd, 2);
 c4.zoneTiles(rs, 'res'); c4.zoneTiles(cm, 'com'); c4.zoneTiles(ind, 'ind');
 c4.placeService(T(12, 12), 'power');

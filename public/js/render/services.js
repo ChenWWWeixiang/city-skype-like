@@ -161,7 +161,8 @@ export class ServiceRenderer {
       const wz = (z + 0.5) * MAP.TILE - HALF;
       const rot = Math.floor(hash2(x, z, 31) * 4) * Math.PI / 2;
       q.setFromAxisAngle(this._up, rot);
-      p.set(wx, 0, wz);
+      const gy = (state.height && state.height[i]) || 0;
+      p.set(wx, gy, wz);
       s.set(1, 1, 1);
       m.compose(p, q, s);
       const n = counts[sid];
@@ -170,7 +171,7 @@ export class ServiceRenderer {
         mesh.setColorAt(n, this._c.setHex(0xffffff));
         counts[sid] = n + 1;
       }
-      this.positions.push({ x: wx, z: wz, id: sid, h: 15.5 });
+      this.positions.push({ x: wx, z: wz, id: sid, h: gy + 15.5, y: gy });
     }
     for (const id of Object.keys(this.meshes)) {
       const mesh = this.meshes[id];
@@ -200,7 +201,7 @@ export class ServiceRenderer {
       // 光柱：只有「需要出动」的特种设施才发光柱
       if (nb < this.beams.instanceMatrix.count && (it.id === 1 || it.id === 2 || it.id === 3 || it.id === 4)) {
         q.setFromAxisAngle(this._up, this.t * 0.5 + it.x);
-        p.set(it.x, 0.2, it.z);
+        p.set(it.x, (it.y || 0) + 0.2, it.z);
         s.set(1, 1, 1);
         m.compose(p, q, s);
         this.beams.setMatrixAt(nb, m);

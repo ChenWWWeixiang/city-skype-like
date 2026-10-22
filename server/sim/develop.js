@@ -467,7 +467,16 @@ function updateHappiness(city) {
 
 /** 月度预算 */
 function processBudget(city) {
-  // 资金已经按小时持续累计，这里只把本月的累计值写进流水并清零
+  // 资金按「结算步长」持续结算；月度边界上把剩余的累计也落一次账。
+  return settleBudget(city);
+}
+
+/**
+ * 结算：把这段时间累计的收支写进财政流水。
+ * 步长由玩家设置（默认每 10 个游戏分钟一次），
+ * 于是面板上的钱是「随时在动」的，而不是每月才跳一次。
+ */
+function settleBudget(city) {
   const income = city._accIncome || 0;
   const expense = city._accExpense || 0;
   city._accIncome = 0;
@@ -480,16 +489,18 @@ function processBudget(city) {
   };
   city.ledger.push(entry);
   if (city.ledger.length > 400) city.ledger.shift();
+  city.lastSettlement = entry;
   return entry;
 }
 
 /**
- * 每小时的收支累计
+ * 实时市政收支（口径：每「游戏小时」）
  * -------------------------------------------------------------
- * 资金不再是"每月结算一次"的台阶，而是**每小时持续增长/扣除**，
- * 面板上的钱随时都在动。月度结算只负责把这一个月的累计值写进流水。
+ * 市政维护是**实时**的：每一格道路、每一座设施每时每刻都在花钱，
+ * 税收也随时在收。1x 速度下 1 游戏小时 = 30 真实秒，
+ * 所以钱每秒都在动，而不是「每月结算一次」的台阶。
  */
-function accrueBudget(city, dtHours = 1) {
+function accrueBudget(city, dtHours = 1 / 60) {
   const st = city.stats;
   const tiles = city.tiles;
   let comJobs = 0, indJobs = 0;
@@ -502,8 +513,10 @@ function accrueBudget(city, dtHours = 1) {
     indJobs * ECON.TAX_BASE_IND * city.tax.ind / 100;
 
   let street = 0, ave = 0, hwy = 0;
-  for (const t of tiles) { if (t.road === 1) street++; else if (t.road === 2) ave++; else if (t.road === 3) hwy++; }
-  const roadUpkeep = street * 4 + ave * 9 + hwy * 20;
+  for (const t of tiles) {
+    if (t.road === 1) street++; else if (t.road === 2) ave++; else if (t.road === 3) hwy++;
+  }
+  const roadUpkeep = street * ECON.ROAD_UPKEEP[1] + ave * ECON.ROAD_UPKEEP[2] + hwy * ECON.ROAD_UPKEEP[3];
 
   let svcUpkeep = 0;
   for (const i of city.serviceTiles || []) {
@@ -512,19 +525,18 @@ function accrueBudget(city, dtHours = 1) {
   }
   const expense = ECON.BASE_UPKEEP + roadUpkeep + svcUpkeep;
   const net = income - expense;
-  // 月度口径 -> 每小时口径
-  const HOURS = 30 * 24;
-  const hIncome = income / HOURS * dtHours;
-  const hExpense = expense / HOURS * dtHours;
-  city.funds += hIncome - hExpense;
-  city._accIncome = (city._accIncome || 0) + hIncome;
-  city._accExpense = (city._accExpense || 0) + hExpense;
-  st.income = income; st.expense = expense;
-  st.incomeHour = hIncome;
-  st.expenseHour = hExpense;
+  city.funds += net * dtHours;
+  city._accIncome = (city._accIncome || 0) + income * dtHours;
+  city._accExpense = (city._accExpense || 0) + expense * dtHours;
+  st.income = income; st.expense = expense;        // § / 游戏小时
+  st.incomeHour = income; st.expenseHour = expense;
+  st.netHour = net;
+  st.incomeMin = income / 60; st.expenseMin = expense / 60; st.netMin = net / 60;
+  st.roadUpkeep = roadUpkeep;
+  st.svcUpkeep = svcUpkeep;
+  st.adminUpkeep = ECON.BASE_UPKEEP;
   return {
-    income: city._accIncome || 0, expense: city._accExpense || 0,
-    net: (city._accIncome || 0) - (city._accExpense || 0),
+    income, expense, net,
   };
 }
 
@@ -539,5 +551,6 @@ export const development = {
   updateDemand,
   updateHappiness,
   processBudget,
+  settleBudget,
   accrueBudget,
 };

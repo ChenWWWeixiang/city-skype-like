@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { net, state } from './net.js';
 import { RtsCamera } from './camera.js';
-import { createRenderer, createScene, rebuildWater, applyQuality } from './render/world.js';
+import { createRenderer, createScene, rebuildWater, rebuildTerrain, applyQuality } from './render/world.js';
 import { RoadRenderer } from './render/roads.js';
 import { BuildingRenderer } from './render/buildings.js';
 import { AgentRenderer } from './render/agents.js';
@@ -42,7 +42,7 @@ async function main() {
   ui.renderToolOptions('select', {});
   ui.refreshCityList();
 
-  const tools = new Tools({ dom: canvas, camera, net, ui, overlay, state });
+  const tools = new Tools({ dom: canvas, camera, net, ui, overlay, state, ground: world.ground });
   const tutorial = new Tutorial(net);
   tutorial.mount();
   rts.leftMode = 'rotate';                  // 初始工具为"选择"，左键拖拽 = 3D 转视角
@@ -179,6 +179,7 @@ async function main() {
     services.updateBeacons(dt);
     if (state.terrainDirty) {
       rebuildWater(world.water, state);
+      rebuildTerrain(world.ground, state);   // 地形起伏（山丘 / 河谷 / 隧道沟槽）
       state.terrainDirty = false;
     }
     if (state.congestionDirty) {

@@ -70,7 +70,8 @@ export class Lab {
     this.stage = Math.max(1, Math.min(6, stage | 0));
     this.time = 0;
     this.acc = 0;
-    this.city = new City({ name: '车辆仿真实验室 · 阶段 ' + this.stage });
+    // 实验室用平地：变量只有「车流」，不受地形坡度干扰
+    this.city = new City({ name: '车辆仿真实验室 · 阶段 ' + this.stage, flat: true });
     this.city.speed = 1;
     this.markers = [];
     this.routes = [];

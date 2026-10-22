@@ -3,7 +3,7 @@
 // ============================================================================
 import {
   MAP, TIME, ROADS, ZONES, ECON, SERVICES, SERVICE_BY_ID,
-  BUILDING_CAPS, TRAFFIC, LAND, TERRAIN, ELEV, LANE_TYPE_LIST, DEMOGRAPHY,
+  BUILDING_CAPS, TRAFFIC, LAND, TERRAIN, ELEV, LANE_TYPE_LIST, DEMOGRAPHY, hash2,
 } from './constants.js';
 import { buildNetwork, tileIndex } from './roadnet.js';
 import { TrafficSim } from './traffic.js';
@@ -43,6 +43,7 @@ export class City {
     this.id = opts.id || ('c' + Date.now().toString(36) + (CITY_SEQ++).toString(36));
     this.name = opts.name || '新城市';
     this.seed = opts.seed ?? MAP.WATER_SEED;
+    this.flat = !!opts.flat;      // 平地（无起伏）：测试与「平原城市」用
     this.tick = 0;                       // 游戏分钟
     this.funds = opts.funds ?? ECON.START_FUNDS;
     this.tax = { ...ECON.DEFAULT_TAX };
@@ -60,9 +61,12 @@ export class City {
       waiting: 0,      // 到了城市但还没分配住房的人口
       births: 0, deaths: 0, immigrants: 0, emigrants: 0,
       homeless: 0,
+      // 每小时速率（人口随时在变 —— 面板上要能看到「涨/跌多少」）
+      rate: { birth: 0, death: 0, immig: 0, emig: 0, net: 0 },
       _immigAcc: 0,    // 移民累积器
       _deathAcc: 0,
       _birthAcc: 0,
+      _rBirth: 0, _rDeath: 0, _rImmig: 0, _rEmig: 0,
     };
     // 车队登记处：车只会「在家里的车位」诞生，不会凭空出现在马路上
     this.fleet = { cars: 0, trucks: 0, bikes: 0, special: 0, total: 0 };
@@ -82,6 +86,9 @@ export class City {
       landValueAvg: 0, trafficIndex: 0,
     };
     this.ledger = [];
+    // 财政结算步长（游戏分钟）：每 N 分钟把累计收支写进流水一次
+    this.settleMinutes = ECON.SETTLE_MINUTES;
+    this._settleAcc = 0;
     this._genTerrain();
     this._initTiles();
     this._lastLevel = new Int32Array(this.tiles.length);
@@ -98,21 +105,119 @@ export class City {
     const S = MAP.SIZE;
     this.terrain = new Uint8Array(S * S);
     const s = this.seed;
+    // 河流：南北走向，位于地图东侧（x ≈ 39）。
+    // 地图被一条大河切成两半 —— 想把路修到东岸，就必须修桥。
     for (let x = 0; x < S; x++) {
-      const c = S * 0.56 + Math.sin(x * 0.115 + (s % 13)) * 5.6 + Math.sin(x * 0.31 + 1.7) * 1.8;
-      const w = 1.45 + 0.85 * Math.sin(x * 0.19 + 1.1);
+      const c = 38.6 + Math.sin(x * 0.145 + (s % 11) * 0.7) * 3.0 + Math.sin(x * 0.33 + 1.7) * 1.3;
+      const w = 1.55 + 0.7 * Math.sin(x * 0.21 + 1.1);
       for (let z = 0; z < S; z++) {
-        if (Math.abs(z - c) < w) this.terrain[tileIndex(x, z)] = TERRAIN.water;
+        if (Math.abs(x - c) < w) this.terrain[tileIndex(x, z)] = TERRAIN.water;
       }
     }
-    // 一个小湖
-    for (let z = 38; z < 43; z++) {
-      for (let x = 6; x < 11; x++) {
-        const d = Math.hypot((x - 8.2) / 2.6, (z - 40.4) / 2.4);
+    // 一个小湖（西南角）
+    for (let z = 38; z < 44; z++) {
+      for (let x = 3; x < 8; x++) {
+        const d = Math.hypot((x - 5.2) / 2.4, (z - 40.4) / 2.4);
         if (d < 1 + 0.25 * Math.sin(x * 2 + z)) this.terrain[tileIndex(x, z)] = TERRAIN.water;
       }
     }
+    this._genHeight();
   }
+
+  /**
+   * 地形高程：山丘 + 河谷。
+   * 高程决定道路能不能修 —— 相邻路段高差超过 MAX_RAMP(15% 坡度) 就修不了，
+   * 玩家必须「绕山而行」；水面上的路自动变成桥。
+   */
+  _genHeight() {
+    const S = MAP.SIZE;
+    const s = this.seed;
+    const noise = (x, z, f, sd) => {
+      const xi = Math.floor(x), zi = Math.floor(z);
+      const xf = x - xi, zf = z - zi;
+      const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+      const a = hash2(xi, zi, sd), b = hash2(xi + 1, zi, sd);
+      const c = hash2(xi, zi + 1, sd), d = hash2(xi + 1, zi + 1, sd);
+      return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+    };
+    const h = new Float32Array(S * S);
+    // 1) 平原：起伏平缓（坡度普遍 < 10%），可以放心修路
+    for (let z = 0; z < S; z++) {
+      for (let x = 0; x < S; x++) {
+        const i = z * S + x;
+        if (this.flat) { h[i] = 0; continue; }   // 平地（测试用）
+        let v = 0;
+        v += 3.2 * noise(x * 0.038, z * 0.038, 1, s);          // 大地形
+        v += 1.8 * noise(x * 0.094, z * 0.094, 1, s + 31);     // 中丘
+        v += 0.7 * noise(x * 0.225, z * 0.225, 1, s + 77);     // 小起伏
+        // 盆地：地图中部（玩家起手区）地势低平，越靠边缘越抬高
+        const d = Math.hypot(x - S * 0.46, z - S * 0.46);
+        const u = Math.max(0, Math.min(1, (d - 15) / 18));
+        v += 6 * Math.pow(u, 1.25);
+        h[i] = Math.max(0, v);
+      }
+    }
+    // 2) 山脉：坡度超过 22% —— 修不了路，必须绕山而行（或挖隧道穿过去）
+    for (const p of (this.flat ? [] : this._genPeaks())) {
+      const x0 = Math.max(0, Math.floor(p.x - p.r)), x1 = Math.min(S - 1, Math.ceil(p.x + p.r));
+      const z0 = Math.max(0, Math.floor(p.z - p.r)), z1 = Math.min(S - 1, Math.ceil(p.z + p.r));
+      for (let z = z0; z <= z1; z++) {
+        for (let x = x0; x <= x1; x++) {
+          const dd = Math.hypot(x - p.x, z - p.z);
+          if (dd >= p.r) continue;
+          const t = 1 - dd / p.r;
+          h[z * S + x] += p.h * Math.pow(t, 1.45);
+        }
+      }
+    }
+    // 3) 河岸 / 湖岸：水边留出缓坡，岸边高度固定为「刚好高出水面」
+    const dist = new Int16Array(S * S).fill(999);
+    const queue = [];
+    for (let i = 0; i < S * S; i++) {
+      if (this.terrain[i] === TERRAIN.water) { dist[i] = 0; queue.push(i); }
+    }
+    let head = 0;
+    while (head < queue.length) {
+      const i = queue[head++];
+      const x = i % S, z = Math.floor(i / S);
+      const nb = [[x, z - 1], [x + 1, z], [x, z + 1], [x - 1, z]];
+      for (const [nx, nz] of nb) {
+        if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+        const ni = nz * S + nx;
+        if (dist[ni] > dist[i] + 1) { dist[ni] = dist[i] + 1; queue.push(ni); }
+      }
+    }
+    for (let i = 0; i < S * S; i++) {
+      const d = dist[i];
+      if (d === 0) { h[i] = ELEV.RIVER_BED; continue; }
+      if (d <= ELEV.BANK_TILES) {
+        // 河岸：线性缓坡，保证岸边每格高差都在坡度上限内（引桥才接得上桥面）
+        const k = Math.min(1, (d - 1) / ELEV.BANK_TILES);
+        h[i] = ELEV.BANK_TOP + (h[i] - ELEV.BANK_TOP) * k;
+      }
+    }
+    this.height = h;
+  }
+
+  /** 山峰位置（确定性的，随种子变化） */
+  _genPeaks() {
+    const S = MAP.SIZE;
+    const s = this.seed;
+    const spots = [[0.30, 0.24], [0.66, 0.28], [0.27, 0.70], [0.63, 0.68], [0.47, 0.11]];
+    const peaks = [];
+    for (let k = 0; k < spots.length; k++) {
+      peaks.push({
+        x: (spots[k][0] + (hash2(k, 1, s) - 0.5) * 0.07) * S,
+        z: (spots[k][1] + (hash2(k, 2, s) - 0.5) * 0.07) * S,
+        r: 4.0 + hash2(k, 3, s) * 2.4,
+        h: 9 + hash2(k, 4, s) * 5.5,
+      });
+    }
+    return peaks;
+  }
+
+  /** 地块地形高度（米） */
+  elevAt(i) { return this.height ? (this.height[i] || 0) : 0; }
 
   _initTiles() {
     const N = MAP.SIZE * MAP.SIZE;
@@ -127,6 +232,9 @@ export class City {
         occ: 0,        // 入住率 0~1（居民搬入/搬出，人口随之连续变化）
         over: 0,       // 高架层道路类型（可与地面道路同格并存 -> 立交）
         h: 0,          // 高架层高程 (m)
+        roadH: 0,      // 地面路面高程 (m)：随地形起伏 / 桥面 / 隧道
+        bridge: 0,     // 1 = 桥（跨水）
+        tunnel: 0,     // 1 = 隧道（路面在地面以下）
         lt: 0,         // 车道类型打包（每车道 2 bit）
         olt: 0,        // 高架层车道类型打包
       };
@@ -179,6 +287,13 @@ export class City {
       valid.push(i);
     }
     if (!valid.length) return { ok: false, msg: '没有可施工的地块' };
+    // --- 坡度 / 桥 / 隧道 判定（自然规律：太陡修不了路，跨水自动成桥）---
+    let plan = null;
+    if (!elevated) {
+      // 用完整的绘制路径算高程剖面（valid 里可能跳过了「已经是同款路」的地块）
+      plan = this._planRoadHeights(tileList.filter((i) => i >= 0 && i < this.tiles.length), { tunnel: !!opts.tunnel });
+      if (!plan.ok) return { ok: false, msg: plan.msg };
+    }
     if (!this.canAfford(cost)) return { ok: false, msg: '资金不足' };
     this.funds -= cost;
     if (elevated) {
@@ -189,7 +304,8 @@ export class City {
         const t = this.tiles[i];
         if (!t.road) { t.zone = 0; t.level = 0; t.service = 0; }
         t.over = roadType;
-        t.h = profile[k];
+        // 高架的基准面是地形高度（坡道两端才能与地面道路接上）
+        t.h = this.elevAt(i) + profile[k];
         t.olt = 0;
         this.markDirty(i);
       }
@@ -213,6 +329,10 @@ export class City {
       t.level = 0;
       t.service = 0;
       t.lt = 0;
+      const ph = plan && plan.heights.has(i) ? plan.heights.get(i) : this.elevAt(i);
+      t.roadH = ph;                                            // 路面高程（随地形起伏）
+      t.bridge = (t.terrain === TERRAIN.water && !opts.tunnel) ? 1 : 0;  // 跨水 -> 桥
+      t.tunnel = opts.tunnel ? 1 : 0;
       this.markDirty(i);
     }
     this.rebuildNetwork();
@@ -220,9 +340,229 @@ export class City {
     return {
       ok: true,
       msg: (upgrade ? '已升级 ' + upgrade + ' 处为' : '已建造 ') +
-        def.name + '（-' + Math.round(cost) + ' §）',
+        def.name + '（-' + Math.round(cost) + ' §）' + (plan && plan.note ? '　' + plan.note : ''),
       cost,
     };
+  }
+
+  /**
+   * 计算一段新路的路面高程，并做「自然规律」检查：
+   *   1. 坡度：相邻路段高差超过 MAX_RAMP（15% 坡度）就修不了 —— 必须绕山；
+   *   2. 跨水：水面上的路自动变成桥，桥面要留出净空；
+   *   3. 桥上不能有路口：桥格最多只能有 2 个连接（只能直行通过）；
+   *   4. 隧道：路面在地面以下，入口用坡道接回地面，中段是平滑的隧道断面。
+   */
+  _planRoadHeights(tiles, opts = {}) {
+    const S = MAP.SIZE;
+    const tunnel = !!opts.tunnel;
+    const heights = new Map();
+    const newSet = new Set(tiles);
+    const n = tiles.length;
+    const NEI = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    if (!n) return { ok: false, msg: '没有可施工的地块' };
+
+    // ---------- 隧道：路面在地面以下，两端用坡道接回地面 ----------
+    if (tunnel) {
+      for (const i of tiles) {
+        if (this.tiles[i].terrain === TERRAIN.water) {
+          return { ok: false, msg: '隧道不能穿水（跨水请修桥）' };
+        }
+      }
+      // 地面线（平滑后）+ 两端贴地的下沉曲线
+      const nat = tiles.map((i) => this.elevAt(i));
+      // --- 约束点：隧道两端 + 与已有道路相接处，路面高度必须与已有道路一致 ---
+      const cons = new Map();
+      const addCons = (k, h) => { if (!cons.has(k)) cons.set(k, h); };
+      addCons(0, nat[0]);
+      addCons(n - 1, nat[n - 1]);
+      for (let k = 0; k < n; k++) {
+        const i = tiles[k];
+        const x = i % S, z = Math.floor(i / S);
+        for (const nb of NEI) {
+          const nx = x + nb[0], nz = z + nb[1];
+          if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+          const ni = nz * S + nx;
+          if (newSet.has(ni)) continue;
+          const nt = this.tiles[ni];
+          if (!nt || !nt.road) continue;
+          addCons(k, nt.roadH === undefined ? this.elevAt(ni) : nt.roadH);
+        }
+      }
+      const consArr = [...cons.entries()].sort((a, b) => a[0] - b[0]);
+      const alignAt = (k) => {
+        if (consArr.length === 1) return consArr[0][1];
+        if (k <= consArr[0][0]) {
+          const [k0, h0] = consArr[0], [k1, h1] = consArr[1];
+          return h0 + (h1 - h0) * (k - k0) / Math.max(1, (k1 - k0));
+        }
+        const last = consArr[consArr.length - 1];
+        if (k >= last[0]) {
+          const [k0, h0] = consArr[consArr.length - 2], [k1, h1] = last;
+          return h1 + (h1 - h0) * (k - k1) / Math.max(1, (k1 - k0));
+        }
+        for (let i = 0; i < consArr.length - 1; i++) {
+          const [k0, h0] = consArr[i], [k1, h1] = consArr[i + 1];
+          if (k >= k0 && k <= k1) return h0 + (h1 - h0) * (k - k0) / Math.max(1, (k1 - k0));
+        }
+        return nat[0];
+      };
+      const align = nat.map((_, k) => alignAt(k));
+      const exc = nat.map((v, k) => v - align[k]);
+      const sm = exc.slice();
+      const R = 2;
+      for (let k = 0; k < n; k++) {
+        let sum = 0, cnt = 0;
+        for (let j = Math.max(0, k - R); j <= Math.min(n - 1, k + R); j++) { sum += exc[j]; cnt++; }
+        sm[k] = sum / cnt;
+      }
+      const prof = new Array(n);
+      for (let k = 0; k < n; k++) {
+        // 离约束点越远越深（约束点处路面与已有道路齐平）
+        let dmin = 1e9;
+        for (const [ck] of consArr) { const d = Math.abs(k - ck); if (d < dmin) dmin = d; }
+        const bump = Math.min(1, dmin / ELEV.TUNNEL_RAMP_TILES);
+        prof[k] = align[k] - Math.min(Math.max(0, sm[k]), ELEV.TUNNEL_DEPTH) * bump;
+      }
+      for (let k = 1; k < n; k++) {
+        const step = this._tileStep(tiles[k - 1], tiles[k]);
+        if (Math.abs(prof[k] - prof[k - 1]) > ELEV.MAX_RAMP * 1.8 * step) {
+          return { ok: false, msg: '隧道坡度太大（入口离山太远），请把隧道修长一点' };
+        }
+      }
+      for (let k = 0; k < n; k++) heights.set(tiles[k], prof[k]);
+      const bad = this._checkAgainstExisting(tiles, heights, ELEV.MAX_RAMP * 1.8);
+      if (bad) return { ok: false, msg: bad };
+      return { ok: true, heights, note: '隧道（路面在地面以下）' };
+    }
+
+    // ---------- 地面道路 / 桥 ----------
+    // 1) 目标高度：陆地 = 地面高程；水面 = 桥面（离水面留净空）
+    const isWater = (i) => this.tiles[i].terrain === TERRAIN.water;
+    const target = new Array(n);
+    for (let k = 0; k < n; k++) {
+      target[k] = isWater(tiles[k]) ? ELEV.BRIDGE_CLEARANCE : this.elevAt(tiles[k]);
+    }
+    // 2) 引道：紧贴水面的陆地格如果低于「桥面 - 一格最大爬升」，就抬高成引桥
+    const approach = ELEV.BRIDGE_CLEARANCE - ELEV.MAX_RAMP;
+    for (let k = 0; k < n; k++) {
+      if (isWater(tiles[k])) continue;
+      const nearWater = (k > 0 && isWater(tiles[k - 1])) || (k < n - 1 && isWater(tiles[k + 1]));
+      if (nearWater && target[k] < approach) target[k] = approach;
+    }
+    // 3) 坡度检查（沿路径）
+    for (let k = 1; k < n; k++) {
+      const step = this._tileStep(tiles[k - 1], tiles[k]);
+      const diff = Math.abs(target[k] - target[k - 1]);
+      if (diff > ELEV.MAX_RAMP * step) {
+        return {
+          ok: false,
+          msg: '坡度超过 ' + Math.round(ELEV.MAX_RAMP / MAP.TILE * 100) +
+            '%（自然规律：这里修不了路，请绕山而行，或改修隧道穿过去）',
+        };
+      }
+    }
+    for (let k = 0; k < n; k++) heights.set(tiles[k], target[k]);
+    // 4) 与已有道路的高差（接驳处也要满足坡度）
+    const bad = this._checkAgainstExisting(tiles, heights, ELEV.MAX_RAMP);
+    if (bad) return { ok: false, msg: bad };
+
+    // 5) 桥上不能有路口
+    const connCount = (i) => {
+      let c = 0;
+      const x = i % S, z = Math.floor(i / S);
+      for (const nb of NEI) {
+        const nx = x + nb[0], nz = z + nb[1];
+        if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+        const ni = nz * S + nx;
+        if (newSet.has(ni) || (this.tiles[ni] && this.tiles[ni].road)) c++;
+      }
+      return c;
+    };
+    const isBridgeTile = (i) => {
+      if (newSet.has(i)) return this.tiles[i].terrain === TERRAIN.water;
+      const t = this.tiles[i];
+      return !!(t && t.road && t.terrain === TERRAIN.water);
+    };
+    const bridgeFail = '桥上不能有路口：跨水路段只能直行通过（请另修一条路绕行）';
+    for (const i of tiles) {
+      if (isBridgeTile(i) && connCount(i) > 2) return { ok: false, msg: bridgeFail };
+      // 已有桥格被新路段接入，也会变成路口
+      const x = i % S, z = Math.floor(i / S);
+      for (const nb of NEI) {
+        const nx = x + nb[0], nz = z + nb[1];
+        if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+        const ni = nz * S + nx;
+        if (newSet.has(ni)) continue;
+        if (isBridgeTile(ni) && connCount(ni) > 2) return { ok: false, msg: bridgeFail };
+      }
+    }
+    let note = '';
+    for (const i of tiles) if (isWater(i)) { note = '跨水路段已架桥（桥上不能有路口）'; break; }
+    return { ok: true, heights, note };
+  }
+
+  /** 两格之间的「格距」（斜线算 √2 倍，坡度限制按距离换算） */
+  _tileStep(a, b) {
+    const S = MAP.SIZE;
+    const dx = (a % S) - (b % S);
+    const dz = Math.floor(a / S) - Math.floor(b / S);
+    return Math.max(1, Math.hypot(dx, dz));
+  }
+
+  /** 新路段与「已有道路」之间的高差检查（接驳处也要满足坡度） */
+  _checkAgainstExisting(tiles, heights, limit) {
+    const S = MAP.SIZE;
+    const newSet = new Set(tiles);
+    const NEI = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    for (const i of tiles) {
+      const h = heights.get(i);
+      const x = i % S, z = Math.floor(i / S);
+      for (const nb of NEI) {
+        const nx = x + nb[0], nz = z + nb[1];
+        if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+        const ni = nz * S + nx;
+        if (newSet.has(ni)) continue;
+        const nt = this.tiles[ni];
+        if (!nt || !nt.road) continue;
+        const nh = nt.roadH === undefined ? this.elevAt(ni) : nt.roadH;
+        if (Math.abs(h - nh) > limit) {
+          return '与已有道路的高差超过 ' + Math.round(limit / MAP.TILE * 100) +
+            '%（坡度太陡，请绕山而行）';
+        }
+      }
+    }
+    return null;
+  }
+
+  /** 让已有道路的高程平缓过渡（老存档从「平面地形」升级过来时用） */
+  _relaxRoadHeights() {
+    const S = MAP.SIZE;
+    const NEI = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    for (let it = 0; it < 10; it++) {
+      let moved = false;
+      for (let z = 0; z < S; z++) {
+        for (let x = 0; x < S; x++) {
+          const i = z * S + x;
+          const t = this.tiles[i];
+          if (!t.road) continue;
+          let sum = 0, n = 0;
+          for (const nb of NEI) {
+            const nx = x + nb[0], nz = z + nb[1];
+            if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
+            const nt = this.tiles[nz * S + nx];
+            if (!nt.road) continue;
+            sum += nt.roadH; n++;
+          }
+          if (!n) continue;
+          const avg = sum / n;
+          if (Math.abs(avg - t.roadH) > ELEV.MAX_RAMP * 0.5) {
+            t.roadH += (avg - t.roadH) * 0.35;
+            moved = true;
+          }
+        }
+      }
+      if (!moved) break;
+    }
   }
 
   /** 分区 */
@@ -435,7 +775,10 @@ export class City {
     // 快进 3 个游戏日：房子长出来、人口从高速出入口涌进来、第一批车开上路，
     // 玩家点完「一键建城」立刻就能看到车流，而不是干等半天。
     for (let d = 0; d < 3; d++) {
-      for (let h = 0; h < 24; h++) { this.advance(60); this.stepTraffic(TRAFFIC.SEC_PER_HOUR); }
+      for (let h = 0; h < 24; h++) {
+        this.advance(60);
+        this.stepTraffic(TIME.TRAFFIC_PER_GAME_HOUR);
+      }
     }
     this.speed = 2;                 // 直接给到 2×，车流更明显
     return {
@@ -530,6 +873,15 @@ export class City {
     this.tax[kind] = v;
     this.updateDemand();
     return { ok: true, msg: '税率已调整为 ' + v + '%' };
+  }
+
+  /** 设置财政结算步长（游戏分钟）：每 N 分钟把累计收支入账一次 */
+  setSettleStep(minutes) {
+    const v = Math.max(1, Math.min(240, Math.round(Number(minutes) || ECON.SETTLE_MINUTES)));
+    this.settleMinutes = v;
+    // 立刻结算一次，避免玩家改步长后看不到变化
+    this.settleBudget();
+    return { ok: true, msg: '结算步长已设为每 ' + v + ' 个游戏分钟（1x 下约 ' + (v / 2).toFixed(1) + ' 秒入账一次）' };
   }
 
   markDirty(i) { this.dirty.add(i); }
@@ -630,6 +982,8 @@ export class City {
         this.updateEfficiency();
         this.updateDemand();
       }
+      // 人口速率：按「上一个游戏小时」的实际发生量统计（面板实时显示涨/跌）
+      this._rollDemographyRates();
     } else {
       // 未跨整点：若是新建/读档后的第一段时间，补一次出行强度，保证立即有车流
       this.traffic.ensureTripRate();
@@ -643,8 +997,16 @@ export class City {
     // 车队规模跟随人口（家庭购车 / 老车报废）
     this.traffic.syncFleet();
     this.refreshAggregates();
-    // 资金按分钟持续结算 -> 面板上的钱随时都在动
+    // 资金实时结算：市政维护每时每刻都在扣钱 -> 面板上的钱随时都在动
     this.accrueBudget(whole / 60);
+    // 结算步长：每 N 个游戏分钟把累计收支写进财政流水
+    this._settleAcc = (this._settleAcc || 0) + whole;
+    const step = Math.max(1, this.settleMinutes || ECON.SETTLE_MINUTES);
+    let guard = 0;
+    while (this._settleAcc >= step && guard++ < 64) {
+      this._settleAcc -= step;
+      this.settleBudget();
+    }
     const daysCrossed = Math.floor(this.tick / 1440) - Math.floor(prevTick / 1440);
     if (daysCrossed > 0) this.updateDaily();
     const monthsCrossed = Math.floor(this.tick / 43200) - Math.floor(prevTick / 43200);
@@ -674,6 +1036,7 @@ export class City {
       while (dem._birthAcc >= 1) {
         dem._birthAcc -= 1;
         dem.births++;
+        dem._rBirth++;
         dem.pop++;
         dem.waiting++;          // 新生儿也要住房
       }
@@ -685,6 +1048,7 @@ export class City {
       while (dem._deathAcc >= 1) {
         dem._deathAcc -= 1;
         dem.deaths++;
+        dem._rDeath++;
         dem.pop = Math.max(0, dem.pop - 1);
         if (dem.waiting > 0) dem.waiting--;
       }
@@ -724,10 +1088,44 @@ export class City {
     dem.housed = Math.max(0, dem.pop - dem.waiting);
   }
 
+  /** 结算人口速率（每游戏小时）：移民 / 新生儿 / 死亡 / 迁出 */
+  _rollDemographyRates() {
+    const dem = this.demography;
+    const r = dem.rate;
+    r.birth = dem._rBirth;
+    r.death = dem._rDeath;
+    r.immig = dem._rImmig;
+    r.emig = dem._rEmig;
+    r.net = (dem._rImmig + dem._rBirth) - (dem._rDeath + dem._rEmig);
+    dem._rBirth = 0; dem._rDeath = 0; dem._rImmig = 0; dem._rEmig = 0;
+  }
+
+  /** 估算当前的人口速率（新建城市 / 读档后立刻显示，不用等第一个整点） */
+  _estimateDemographyRates() {
+    const dem = this.demography;
+    const r = dem.rate;
+    const pop = dem.pop || 0;
+    const happy = this.stats.happiness === undefined ? 70 : this.stats.happiness;
+    const edu = this.educationFactor();
+    r.birth = pop * DEMOGRAPHY.BIRTH_RATE_PER_HOUR * edu;
+    r.death = pop * DEMOGRAPHY.DEATH_RATE_PER_HOUR;
+    const jobs = this.stats.jobs || 0;
+    const jobFactor = Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
+      (jobs + 25) / Math.max(45, pop * 0.5));
+    const happyFactor = Math.max(0, Math.min(1, (happy - 20) / 45));
+    const rate = Math.min(DEMOGRAPHY.IMMIGRATION_MAX_PER_HOUR,
+      DEMOGRAPHY.IMMIGRATION_BASE_PER_HOUR * jobFactor * happyFactor);
+    r.immig = rate * (this.entrances || []).length;
+    const unhappy = Math.max(0, (70 - happy) / 70);
+    r.emig = pop * DEMOGRAPHY.EMIGRATION_RATE_PER_HOUR * (1 + unhappy * DEMOGRAPHY.EMIGRATION_UNHAPPY_FACTOR);
+    r.net = (r.immig + r.birth) - (r.death + r.emig);
+  }
+
   /** 移民抵达：车上的人成为城市居民（等待安置 -> 找房子住） */
   onImmigrantsArrive(n) {
     const dem = this.demography;
     dem.immigrants += n;
+    dem._rImmig += n;
     dem.pop += n;
     dem.waiting += n;
     dem.housed = Math.max(0, dem.pop - dem.waiting);
@@ -744,6 +1142,7 @@ export class City {
   onEmigrantsLeave(n) {
     const dem = this.demography;
     dem.emigrants += n;
+    dem._rEmig += n;
     dem.pop = Math.max(0, dem.pop - n);
     dem.waiting = Math.max(0, dem.waiting - n);
     dem.housed = Math.max(0, dem.pop - dem.waiting);
@@ -770,6 +1169,7 @@ export class City {
       v: 1,
       id: this.id, name: this.name, seed: this.seed,
       tick: this.tick, funds: this.funds, tax: this.tax, speed: this.speed,
+      settleMinutes: this.settleMinutes,
       trafficT: Math.round(this.traffic.t || 0),
       entrances: (this.entrances || []).slice(),
       terrain: Array.from(this.terrain),
@@ -784,6 +1184,7 @@ export class City {
         t.power ? 1 : 0, t.water ? 1 : 0,
         Math.round((t.h || 0) * 10) / 10, t.lt || 0, t.over || 0, t.olt || 0,
         Math.round((t.occ === undefined ? (t.level ? 1 : 0) : t.occ) * 255),
+        Math.round((t.roadH || 0) * 10) / 10, t.bridge || 0, t.tunnel || 0,
       ]),
       ledger: this.ledger.slice(-240),
       createdAt: this.createdAt,
@@ -793,6 +1194,8 @@ export class City {
   static restore(data) {
     const city = new City({ id: data.id, name: data.name, seed: data.seed, funds: data.funds, tax: data.tax });
     city.tick = data.tick | 0;
+    city.settleMinutes = data.settleMinutes || ECON.SETTLE_MINUTES;
+    let oldFormat = false;
     city.tiles.forEach((t, i) => {
       const a = data.tiles[i] || [0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0];
       t.zone = a[0]; t.level = a[1]; t.road = a[2]; t.service = a[3];
@@ -800,7 +1203,19 @@ export class City {
       t.h = a[7] || 0; t.lt = a[8] || 0; t.over = a[9] || 0;
       t.olt = a[10] || 0;
       t.occ = a.length > 11 ? (a[11] / 255) : (t.level ? 1 : 0);
+      // 路面高程 / 桥 / 隧道（新存档字段；老存档按地形补齐）
+      if (a.length > 14) {
+        t.roadH = a[12] || 0;
+        t.bridge = a[13] || 0;
+        t.tunnel = a[14] || 0;
+      } else {
+        oldFormat = true;
+        t.roadH = city.elevAt(i);
+        t.bridge = t.road && t.terrain === TERRAIN.water ? 1 : 0;
+        t.tunnel = 0;
+      }
     });
+    if (oldFormat) city._relaxRoadHeights();
     city.ledger = data.ledger || [];
     // 人口账本：老存档没有账本 -> 用地块里已有的人口初始化一次
     if (data.demography) {
@@ -832,6 +1247,8 @@ export class City {
     city.traffic.hour = Math.floor(city.traffic.t / TRAFFIC.SEC_PER_HOUR) % 24;
     city.traffic._tripHour = city.traffic.hour;
     city.traffic.ensureTripRate();
+    // 读档后立刻给出人口速率（不用等第一个整点）
+    city._estimateDemographyRates();
     return city;
   }
 }

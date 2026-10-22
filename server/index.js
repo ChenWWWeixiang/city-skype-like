@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { manager } from './game.js';
 import { repo, compress } from './db.js';
-import { MAP, TIME, ROADS, ZONES, SERVICES, ECON, LANE_TYPE_LIST, SIGNAL } from './sim/constants.js';
+import { MAP, TIME, ROADS, ZONES, SERVICES, ECON, LANE_TYPE_LIST, SIGNAL, ELEV } from './sim/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -37,6 +37,13 @@ app.get('/api/config', (req, res) => {
     })),
     startFunds: ECON.START_FUNDS,
     defaultTax: ECON.DEFAULT_TAX,
+    econ: {
+      baseUpkeep: ECON.BASE_UPKEEP,
+      roadUpkeep: ECON.ROAD_UPKEEP,
+      settleSteps: ECON.SETTLE_STEPS,
+      settleMinutes: ECON.SETTLE_MINUTES,
+    },
+    elev: { maxRamp: ELEV.MAX_RAMP, bridgeClearance: ELEV.BRIDGE_CLEARANCE, tunnelDepth: ELEV.TUNNEL_DEPTH },
   });
 });
 

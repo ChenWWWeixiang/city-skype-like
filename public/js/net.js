@@ -18,6 +18,10 @@ export const state = {
   h: new Float32Array(N), lt: new Uint8Array(N),
   over: new Uint8Array(N), overMask: new Uint8Array(N),
   olt: new Uint8Array(N),
+  height: new Float32Array(N),     // 地形高度图（米）
+  roadH: new Float32Array(N),      // 地面路面高程（米）
+  bridge: new Uint8Array(N),       // 1 = 桥
+  tunnel: new Uint8Array(N),       // 1 = 隧道
   congestion: new Uint8Array(N),
   entrances: [],
   events: [],
@@ -26,6 +30,7 @@ export const state = {
   fleet: { total: 0, cars: 0, trucks: 0, special: 0, scrapped: 0 },
   signals: new Uint8Array(N),
   vehicles: new Float32Array(0),
+  settleMinutes: 10,
   // 变更回调
   changedTiles: new Set(),
   congestionDirty: true,
@@ -204,25 +209,35 @@ export class Net {
     }
     state.traffic = h.traffic; state.ledger = h.ledger || [];
     state.lab = h.lab || null;
+    if (h.settleMinutes) state.settleMinutes = h.settleMinutes;
     if (h.demography) state.demography = h.demography;
     if (h.fleet) state.fleet = h.fleet;
     if (h.events) state.events = h.events;
     if (h.eventStats) state.eventStats = h.eventStats;
+    // 地形高度图（只在完整状态里带一次）
+    if (h.height) {
+      for (let i = 0; i < N; i++) state.height[i] = h.height[i] || 0;
+      state.terrainDirty = true;
+    }
     const d = h.diffs || [];
-    for (let i = 0; i < d.length; i += 15) {
+    for (let i = 0; i < d.length; i += 18) {
       const t = d[i];
       if (state.road[t] !== d[i + 3] || state.mask[t] !== d[i + 4]) state.roadsDirty = true;
       if (state.zone[t] !== d[i + 1] || state.level[t] !== d[i + 2] || state.service[t] !== d[i + 5]) state.buildingsDirty = true;
       if (state.terrain[t] !== d[i + 9]) state.terrainDirty = true;
       if (state.h[t] !== d[i + 10] || state.lt[t] !== d[i + 11] ||
           state.over[t] !== d[i + 12] || state.overMask[t] !== d[i + 13] ||
-          state.olt[t] !== d[i + 14]) state.roadsDirty = true;
+          state.olt[t] !== d[i + 14] || state.roadH[t] !== d[i + 15] ||
+          state.bridge[t] !== d[i + 16] || state.tunnel[t] !== d[i + 17]) state.roadsDirty = true;
+      // 路面高程变了 -> 地形（隧道沟槽 / 路基）也要重画
+      if (state.roadH[t] !== d[i + 15] || state.tunnel[t] !== d[i + 17]) state.terrainDirty = true;
       state.zone[t] = d[i + 1]; state.level[t] = d[i + 2]; state.road[t] = d[i + 3];
       state.mask[t] = d[i + 4]; state.service[t] = d[i + 5]; state.land[t] = d[i + 6];
       state.power[t] = d[i + 7]; state.water[t] = d[i + 8]; state.terrain[t] = d[i + 9];
       state.h[t] = d[i + 10]; state.lt[t] = d[i + 11];
       state.over[t] = d[i + 12]; state.overMask[t] = d[i + 13];
       state.olt[t] = d[i + 14];
+      state.roadH[t] = d[i + 15]; state.bridge[t] = d[i + 16]; state.tunnel[t] = d[i + 17];
       state.changedTiles.add(t);
     }
   }

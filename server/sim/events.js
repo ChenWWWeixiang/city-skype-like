@@ -10,7 +10,7 @@
 //       学校 -> 教育提升出生率与幸福度，并在上下学时间制造额外车流
 //   * 特种车辆不是凭空出现：它们随特种建筑诞生，没车就处理不了事件。
 // ============================================================================
-import { MAP, INCIDENTS, SERVICE_DISPATCH, SERVICES } from './constants.js';
+import { MAP, INCIDENTS, SERVICE_DISPATCH, SERVICES, TRAFFIC } from './constants.js';
 
 let INCIDENT_SEQ = 1;
 
@@ -89,7 +89,7 @@ export class EventSystem {
     if (this._lastTrafficT === undefined) { this._lastTrafficT = t; return 0; }
     const dt = Math.max(0, t - this._lastTrafficT);
     this._lastTrafficT = t;
-    return dt / 150;    // TRAFFIC.SEC_PER_HOUR
+    return dt / TRAFFIC.SEC_PER_HOUR;
   }
 
   _pickTile(type) {

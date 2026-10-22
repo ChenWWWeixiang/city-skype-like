@@ -14,7 +14,7 @@ function check(name, cond, extra = '') {
 }
 
 // ---------------------------------------------------------------- 1. 搭建城市
-const c = new City({ name: '出行链测试' });
+const c = new City({ name: '出行链测试', flat: true });
 const rd = [], rs = [], cm = [], ind = [];
 for (let x = 0; x < 32; x++) { rd.push(T(x, 16)); rd.push(T(x, 22)); }
 for (let z = 16; z <= 22; z++) rd.push(T(20, z));
@@ -24,7 +24,7 @@ c.zoneTiles(rs, 'res');
 c.zoneTiles(cm, 'com');
 c.zoneTiles(ind, 'ind');
 c.placeService(T(8, 12), 'power');
-c.placeService(T(36, 36), 'water');
+c.placeService(T(30, 30), 'water');
 c.addEntrance(T(0, 16));   // 高速出入口：人口只能从这里进来
 
 // 跑 30 小时让建筑长出来
@@ -164,10 +164,12 @@ check('人口因拥堵（幸福度下降 -> 迁出）而下降', c.stats.populat
 check('岗位总量没有因拥堵而虚增', c.stats.jobs <= jobsBefore * 1.6, jobsBefore + ' -> ' + c.stats.jobs);
 
 // 商业倒闭
+// 前面那 40 小时已经把楼压到最低了，这里给它两级、留出降级空间再验证倒闭逻辑
+if (c.tiles[comTile].level < 2) { c.tiles[comTile].level = 2; c.tiles[comTile].age = 0; }
 const levelBefore = c.tiles[comTile].level;
 c.demand.com = 0;
 let closed = false;
-for (let i = 0; i < 400 && !closed; i++) {
+for (let i = 0; i < 2500 && !closed; i++) {   // 倒闭是概率事件，多跑几轮确保触发
   c.traffic.stats.congestion = 100;
   for (const eid of jamEdges) c.net.edges[eid].congestion = 1;
   c.updateEfficiency();

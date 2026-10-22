@@ -5,13 +5,22 @@
 
 // --- 高程 / 坡度 ------------------------------------------------------------
 export const ELEV = {
-  MAX_RAMP: 2.0,        // 相邻可连通路格的最大高差 (m)，超过则形成立交（不相连）
+  MAX_RAMP: 2.4,        // 相邻可连通路格的最大高差 (m)：15% 坡度上限
   BRIDGE_HEIGHT: 9.0,   // 高架桥标准高度 (m)
   RAMP_TILES: 6,        // 上下坡过渡格数
   PILLAR_RADIUS: 1.6,   // 桥墩半径 (m)
   GRADE_SPEED_PENALTY:  // 上坡减速系数 (每 10% 坡度)
     0.35,
   MAX_GRADE: 0.18,      // 最大坡度 18%
+  // --- 地形高程 ---
+  TERRAIN_MAX: 34,      // 最高点（米）
+  RIVER_BED: -3.2,      // 河床高度（水面为 0）
+  BANK_TILES: 5,        // 河岸过渡带宽度（格）
+  BANK_TOP: 0.6,        // 河岸顶面高度（刚好高出水面一点）
+  BRIDGE_CLEARANCE: 2.6,// 桥面距水面的净空（米）—— 必须 <= MAX_RAMP 才能从岸边直接上桥
+  TUNNEL_DEPTH: 7.0,    // 隧道埋深（米）
+  TUNNEL_RAMP_TILES: 3, // 隧道口坡道长度（格）
+  MOUNTAIN_MIN_GRADE: 0.22, // 山体坡度阈值：超过这个坡度无法修路（要绕山 / 修隧道）
 };
 
 // --- 车道类型 ---------------------------------------------------------------
@@ -39,17 +48,21 @@ export const TIME = {
   // 关键：交通物理必须与经济时钟解耦。若沿用经济时钟(1x = 120 交通秒/秒)，
   // 一辆 11m/s 的车每秒会跑 1320 米 —— 屏幕上就是「瞬移 / 颜色在跳」，
   // 根本看不出车辆在运动，更谈不上观察排队与拥堵。
-  // 1x = 4 交通秒/真实秒  ->  车速 44 m/s 观感，约 0.7 米/帧 @60fps，运动连续可读。
-  TRAFFIC_SPEEDS: [0, 4, 8, 12, 16],
+  // 1x = 1.5 交通秒/真实秒 —— 车看起来就是「城市里正常开车的速度」
+  //（街道限速 40km/h，屏幕上约 60km/h），不再是「1x 就飞起来」。
+  TRAFFIC_SPEEDS: [0, 1.5, 3, 4.5, 6],
   SPEED_LABELS: ['暂停', '1x', '2x', '3x', '4x'],
   TRAFFIC_DT: 0.25,  // 交通物理子步长（游戏秒）：越小跟驰/排队越细腻
   MAX_SUBSTEPS: 2400,// 每真实秒最多子步数（防止卡顿雪崩）；高倍速时步长自动变粗
+  // 1x 速度下，1 个「游戏小时」对应多少「交通秒」（两个时钟的比例）
+  TRAFFIC_PER_GAME_HOUR: 45,
 };
 
 // --- 道路 ------------------------------------------------------------------
 export const ROADS = {
   // lanes = 道路「总」车道数（双向合计）；每个方向 lanes/2 条。
   // width 必须 <= 建筑退线(16*0.13*2≈5.9m 的半宽×2≈11.8m)，否则建筑会压在马路上。
+  // v0 = 该等级道路的限速 (m/s)：街道 40km/h，大道 60km/h，高速 100km/h
   street: {
     id: 1, name: '街道', cost: 120, upkeep: 4, v0: 11.1, lanes: 2,
     s0: 2.0, T: 1.5, a: 2.8, b: 3.0, width: 8, color: 0x3c4148, zoned: true,
@@ -82,28 +95,37 @@ export const BUILDING_CAPS = {
 
 // --- 服务设施 --------------------------------------------------------------
 export const SERVICES = {
-  police: { id: 1, name: '警察局', cost: 2500, upkeep: 220, radius: 320, capacity: 4000, color: 0x2f6fd0, power: 2, water: 1 },
-  fire:   { id: 2, name: '消防站', cost: 2500, upkeep: 220, radius: 320, capacity: 4000, color: 0xd0453a, power: 2, water: 1 },
-  clinic: { id: 3, name: '诊所',   cost: 3200, upkeep: 300, radius: 300, capacity: 3500, color: 0xe8e8e8, power: 2, water: 2 },
-  school: { id: 4, name: '学校',   cost: 4000, upkeep: 380, radius: 420, capacity: 5200, color: 0xe0b93c, power: 3, water: 2 },
-  park:   { id: 5, name: '公园',   cost: 400,  upkeep: 25,  radius: 170, color: 0x3fa14b, power: 0, water: 1 },
-  power:  { id: 6, name: '发电厂', cost: 12000, upkeep: 900, radius: 900, color: 0xd98b2b, power: 0, water: 3 },
-  water:  { id: 7, name: '水塔',   cost: 1200, upkeep: 90,  radius: 620, color: 0x3aa8d0, power: 1, water: 0 },
+  // upkeep = 每游戏小时的维护费（市政实时支出）
+  police: { id: 1, name: '警察局', cost: 2500, upkeep: 18, radius: 320, capacity: 4000, color: 0x2f6fd0, power: 2, water: 1 },
+  fire:   { id: 2, name: '消防站', cost: 2500, upkeep: 18, radius: 320, capacity: 4000, color: 0xd0453a, power: 2, water: 1 },
+  clinic: { id: 3, name: '诊所',   cost: 3200, upkeep: 20, radius: 300, capacity: 3500, color: 0xe8e8e8, power: 2, water: 2 },
+  school: { id: 4, name: '学校',   cost: 4000, upkeep: 25, radius: 420, capacity: 5200, color: 0xe0b93c, power: 3, water: 2 },
+  park:   { id: 5, name: '公园',   cost: 400,  upkeep: 2,  radius: 170, color: 0x3fa14b, power: 0, water: 1 },
+  power:  { id: 6, name: '发电厂', cost: 12000, upkeep: 40, radius: 900, color: 0xd98b2b, power: 0, water: 3 },
+  water:  { id: 7, name: '水塔',   cost: 1200, upkeep: 8,  radius: 620, color: 0x3aa8d0, power: 1, water: 0 },
 };
 export const SERVICE_LIST = Object.values(SERVICES);
 export const SERVICE_BY_ID = Object.fromEntries(SERVICE_LIST.map((s) => [s.id, s]));
 
 // --- 经济 ------------------------------------------------------------------
+// 口径：所有收支都是「每游戏小时」的量。游戏时钟 1x 时 1 游戏小时 = 30 真实秒，
+// 所以面板上的钱每秒都在动，而不是「每月结一次账」那种台阶式变化。
 export const ECON = {
   START_FUNDS: 120000,
-  TAX_BASE_RES: 26,
-  TAX_BASE_COM: 42,
-  TAX_BASE_IND: 34,
+  // 税收基数：每居民 / 每岗位 每「游戏小时」应收的钱（税率 100% 时）
+  TAX_BASE_RES: 3.0,
+  TAX_BASE_COM: 4.0,
+  TAX_BASE_IND: 3.4,
   DEFAULT_TAX: { res: 9, com: 9, ind: 9 },
   MIN_TAX: 0, MAX_TAX: 20,
   ZONE_COST: { res: 25, com: 40, ind: 35 },
   BULLDOZE_REFUND: 0.15,
-  BASE_UPKEEP: 320,
+  // 市政维护（实时支出，每游戏小时）
+  BASE_UPKEEP: 25,                       // 行政管理费
+  ROAD_UPKEEP: { 1: 0.5, 2: 1.2, 3: 2.8 }, // 每格道路 每游戏小时
+  // 结算步长：每 N 个游戏分钟把累计收支结算一次（写进财政流水）
+  SETTLE_MINUTES: 10,
+  SETTLE_STEPS: [1, 5, 10, 30, 60],
 };
 
 // --- 需求 (RCI) ------------------------------------------------------------
@@ -138,10 +160,12 @@ export const SIGNAL = {
 export const TRAFFIC = {
   MAX_VEHICLES: 1100,
   // 出行强度以「交通日」计：1 个交通日 = 24 个交通小时
-  SEC_PER_HOUR: 150,            // 1 交通小时 = 150 交通秒（1x 下约 37 秒真实时间）
-  DAY_SEC: 3600,                // 1 交通日 = 3600 交通秒（1x 下约 15 分钟真实时间）
-  TRIPS_PER_RESIDENT_DAY: 0.9,   // 每位居民每个交通日的外出次数（上班 + 购物）
-  TRIPS_PER_JOB_DAY: 0.20,   // 每个岗位每个交通日产生的货运/出行次数
+  SEC_PER_HOUR: 56,             // 1 交通小时 = 56 交通秒（1x 下约 37 秒真实时间）
+  DAY_SEC: 1344,                // 1 交通日 = 24 交通小时（1x 下约 15 分钟真实时间）
+  // 出行次数（每交通日）。交通时钟放慢后（车速更真实），同样数量的车在路上的
+  // 时间更长，所以这里相应调低，避免整城死锁 —— 目标是「繁忙但流动」。
+  TRIPS_PER_RESIDENT_DAY: 0.45,  // 每位居民每个交通日的外出次数（上班 + 购物）
+  TRIPS_PER_JOB_DAY: 0.10,   // 每个岗位每个交通日产生的货运/出行次数
   TRUCK_RATIO: 0.14,
   HOUR_WEIGHTS: [
     0.20, 0.10, 0.05, 0.05, 0.10, 0.45, 1.20, 2.60,
@@ -166,6 +190,15 @@ export const TRAFFIC = {
     bike:  { id: 3, len: 1.9, width: 0.8, speedFactor: 0.55, name: '自行车' },
   },
   BIKE_RATIO: 0.16,
+  // --- 速度规则：限速 / 弯道 / 路口 ---
+  // 不同等级道路限速不同（ROADS.*.v0）；弯道与路口还要额外减速，
+  // 减速会直接拉低通行效率 —— 工厂迟到、商业断货都是这么来的。
+  CURVE_SPEED: 0.62,      // 弯道限速系数（相对该道路限速）
+  CURVE_ANGLE: 0.32,       // 超过这个转角(rad)就算「弯道」，开始减速
+  TURN_SPEED: 0.45,        // 路口转弯限速系数
+  TURN_ANGLE: 0.55,        // 超过这个转角(rad)就算「转弯」
+  INTERSECTION_ZONE: 9,     // 路口影响半径 (m)：进入路口就开始减速
+  GRADE_SPEED: 0.55,       // 坡度对车速的额外影响系数（每 10% 坡度）
   // 特种车辆（外形参数）
   SPECIAL_TYPES: {
     police:    { id: 4, len: 4.4, width: 1.9, speedFactor: 1.18, name: '警车',   color: 0x1b3a6b, light: 0x3355ff },
