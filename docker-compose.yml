@@ -1,0 +1,14 @@
+services:
+  city:
+    build: .
+    ports:
+      - "5173:5173"
+    environment:
+      PORT: 5173
+      CITY_DB: /data/city.db
+    volumes:
+      - city-data:/data
+    restart: unless-stopped
+
+volumes:
+  city-data:

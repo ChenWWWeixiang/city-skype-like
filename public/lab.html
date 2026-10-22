@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>车辆仿真实验室 · 分阶段演示</title>
+<link rel="stylesheet" href="/css/app.css">
+<style>
+  #labpanel {
+    position: fixed; left: 14px; top: 14px; z-index: 20; width: 372px;
+    background: rgba(16,19,24,.92); border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px; padding: 14px 16px; color: #dfe4ea;
+    font: 13px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    box-shadow: 0 10px 34px rgba(0,0,0,.45); max-height: 92vh; overflow: auto;
+  }
+  #labpanel h3 { margin: 0 0 8px; font-size: 15px; color: #ffd166; }
+  #labpanel .sub { color: #8b94a1; font-size: 12px; margin-bottom: 10px; }
+  .stages { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-bottom: 10px; }
+  .stages button {
+    background: #232a33; color: #cfd6de; border: 1px solid #364050; border-radius: 6px;
+    padding: 7px 0; cursor: pointer; font-size: 12px;
+  }
+  .stages button.on { background: #e0a72c; color: #1b1b1b; border-color: #e0a72c; font-weight: 700; }
+  #labtitle { font-size: 14px; color: #fff; margin: 2px 0 6px; font-weight: 600; }
+  #labdesc { color: #a9b3bf; font-size: 12px; margin-bottom: 8px; }
+  #labwatch { color: #7fd1a0; font-size: 12px; margin-bottom: 10px; }
+  .kv { display: flex; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,.08); }
+  .kv span { color: #8b94a1; }
+  .kv b { font-weight: 600; color: #e8edf3; }
+  .ctrl { display: flex; gap: 6px; margin: 10px 0; }
+  .ctrl button {
+    flex: 1; background: #232a33; color: #cfd6de; border: 1px solid #364050;
+    border-radius: 6px; padding: 6px 0; cursor: pointer;
+  }
+  .ctrl button:hover { background: #2e3742; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid rgba(255,255,255,.07); }
+  th { color: #7b8794; font-weight: 500; }
+  td b { color: #ffd166; }
+  #labhint { position: fixed; right: 16px; bottom: 14px; z-index: 20; color: #cfd6de;
+    background: rgba(16,19,24,.82); border: 1px solid rgba(255,255,255,.1);
+    padding: 8px 12px; border-radius: 8px; font-size: 12px; }
+  a.back { color: #ffd166; text-decoration: none; }
+</style>
+</head>
+<body>
+<canvas id="viewport"></canvas>
+
+<div id="labpanel">
+  <h3>车辆仿真实验室</h3>
+  <div class="sub">与正式游戏同一套微观车流物理（IDM 跟驰 · 排队 · 变道 · 信号灯 · 路径规划）　<a class="back" href="/">← 回到游戏</a></div>
+  <div class="stages" id="stages"></div>
+  <div id="labtitle">载入中…</div>
+  <div id="labdesc"></div>
+  <div id="labwatch"></div>
+  <div id="labstats"></div>
+  <div class="ctrl">
+    <button id="btnPlay">暂停</button>
+    <button id="btnSlow">0.5x</button>
+    <button id="btnFast">2x</button>
+  </div>
+  <div id="labcars"></div>
+</div>
+
+<div id="labhint">左键拖拽 = 3D 转视角　右键/中键拖拽 = 平移　滚轮 = 缩放</div>
+<script src="/build/lab.js"></script>
+</body>
+</html>

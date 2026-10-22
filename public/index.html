@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>都市天际线 · 浏览器版</title>
+<link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+<canvas id="viewport"></canvas>
+
+<!-- ===================== 顶部信息条 ===================== -->
+<header class="topbar">
+  <div class="tb-left">
+    <div class="brand"><span class="logo">▣</span><span>都市天际线</span></div>
+    <div class="stat money" id="stat-money" title="市政资金">
+      <i class="ic">§</i><span id="funds">0</span>
+    </div>
+    <div class="stat" id="stat-pop" title="人口 / 岗位">
+      <i class="ic">👥</i><span id="population">0</span><em id="jobs">/0</em>
+    </div>
+    <div class="stat" id="stat-happy" title="幸福度">
+      <i class="ic">☺</i><span id="happiness">0</span><em>%</em>
+    </div>
+  </div>
+
+  <div class="tb-center">
+    <div class="rci" title="住宅 / 商业 / 工业 需求">
+      <div class="rci-col"><div class="rci-bar" id="rci-res"></div><span>住</span></div>
+      <div class="rci-col"><div class="rci-bar" id="rci-com"></div><span>商</span></div>
+      <div class="rci-col"><div class="rci-bar" id="rci-ind"></div><span>工</span></div>
+    </div>
+    <div class="rci-labels">需求</div>
+  </div>
+
+  <div class="tb-right">
+    <div class="clock">
+      <span id="date">2024.1.1</span>
+      <span id="clock">00:00</span>
+    </div>
+    <div class="speeds" id="speeds">
+      <button data-speed="0" title="暂停 (空格)">❚❚</button>
+      <button data-speed="1" class="on">1×</button>
+      <button data-speed="2">2×</button>
+      <button data-speed="3">3×</button>
+      <button data-speed="4">4×</button>
+    </div>
+    <div class="tb-actions">
+      <button id="btn-share" title="分享 / 复制城市链接">分享</button>
+      <button id="btn-help" title="游戏说明 / 操作指南">说明</button>
+      <button id="btn-panel" title="统计面板">统计</button>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== 左侧工具栏 ===================== -->
+<nav class="toolbar" id="toolbar">
+  <button class="tool on" data-tool="select" title="选择 / 镜头 (Esc)"><span>➤</span><em>选择</em></button>
+  <button class="tool" data-tool="road" title="道路 (R)"><span>═</span><em>道路</em></button>
+  <button class="tool" data-tool="zone" title="分区 (Z)"><span>▦</span><em>分区</em></button>
+  <button class="tool" data-tool="service" title="服务设施 (S)"><span>⚑</span><em>服务</em></button>
+  <button class="tool" data-tool="entrance" title="高速出入口 (G)：地图边缘的对外连接"><span>⇥</span><em>出入口</em></button>
+  <button class="tool" data-tool="lane" title="车道类型 (L)：点击车道循环切换"><span>⛭</span><em>车道</em></button>
+  <button class="tool" data-tool="bulldoze" title="拆除 (X)"><span>✖</span><em>拆除</em></button>
+  <div class="tool-sep"></div>
+  <button class="tool" data-tool="overlay" title="数据视图 (V)"><span>◍</span><em>视图</em></button>
+</nav>
+
+<!-- 工具选项面板 -->
+<div class="tool-options" id="tool-options"></div>
+
+<!-- ===================== 右侧统计面板 ===================== -->
+<aside class="panel" id="panel">
+  <div class="panel-tabs">
+    <button class="pt on" data-ptab="stats">统计</button>
+    <button class="pt" data-ptab="budget">财政</button>
+    <button class="pt" data-ptab="traffic">交通</button>
+    <button class="pt" data-ptab="civic">民生</button>
+    <button class="pt" data-ptab="cities">城市</button>
+  </div>
+
+  <section class="ptab" id="ptab-stats">
+    <h4>城市概况</h4>
+    <div class="kv"><span>人口</span><b id="s-pop">0</b></div>
+    <div class="kv"><span>工作岗位</span><b id="s-jobs">0</b></div>
+    <div class="kv"><span>失业率</span><b id="s-unemp">0%</b></div>
+    <div class="kv"><span>幸福度</span><b id="s-happy">0%</b></div>
+    <div class="kv"><span>住宅建筑</span><b id="s-res">0</b></div>
+    <div class="kv"><span>商业建筑</span><b id="s-com">0</b></div>
+    <div class="kv"><span>工业建筑</span><b id="s-ind">0</b></div>
+    <div class="kv"><span>平均地价</span><b id="s-land">0</b></div>
+    <div class="kv"><span>工业效率</span><b id="s-eff-ind">100%</b></div>
+    <div class="kv"><span>商业效率</span><b id="s-eff-com">100%</b></div>
+    <div class="kv"><span>通勤效率</span><b id="s-eff-res">100%</b></div>
+    <div class="kv"><span>电力覆盖</span><b id="s-power">0%</b></div>
+    <div class="kv"><span>供水覆盖</span><b id="s-water">0%</b></div>
+    <h4>税率</h4>
+    <div class="slider"><span>住宅</span><input type="range" id="tax-res" min="0" max="20" value="9"><b id="tax-res-v">9%</b></div>
+    <div class="slider"><span>商业</span><input type="range" id="tax-com" min="0" max="20" value="9"><b id="tax-com-v">9%</b></div>
+    <div class="slider"><span>工业</span><input type="range" id="tax-ind" min="0" max="20" value="9"><b id="tax-ind-v">9%</b></div>
+  </section>
+
+  <section class="ptab hidden" id="ptab-budget">
+    <h4>月度收支</h4>
+    <div class="kv"><span>税收收入</span><b id="b-income">0 §</b></div>
+    <div class="kv"><span>道路维护</span><b id="b-road">0 §</b></div>
+    <div class="kv"><span>设施维护</span><b id="b-svc">0 §</b></div>
+    <div class="kv"><span>市政开支</span><b id="b-admin">0 §</b></div>
+    <div class="kv total"><span>月度结余</span><b id="b-net">0 §</b></div>
+    <h4>财政流水</h4>
+    <div class="ledger" id="ledger"></div>
+  </section>
+
+  <section class="ptab hidden" id="ptab-traffic">
+    <h4>交通状况</h4>
+    <div class="kv"><span>在途车辆</span><b id="t-veh">0</b></div>
+    <div class="kv"><span>拥堵路段</span><b id="t-jam">0</b></div>
+    <div class="kv"><span>平均车速</span><b id="t-speed">0 km/h</b></div>
+    <div class="kv"><span>拥堵指数</span><b id="t-cong">0%</b></div>
+    <div class="kv"><span>平均通行时间</span><b id="t-trip">0 s</b></div>
+    <div class="kv"><span>无法到达</span><b id="t-unreach">0</b></div>
+    <div class="kv"><span>特种车辆出动</span><b id="t-dispatch">0</b></div>
+    <div class="kv"><span>在途/停靠</span><b id="t-dwell">0</b></div>
+    <h4>出行目的分布</h4>
+    <div class="kv"><span>上班</span><b id="t-work">0</b></div>
+    <div class="kv"><span>购物</span><b id="t-shop">0</b></div>
+    <div class="kv"><span>货运</span><b id="t-freight">0</b></div>
+    <div class="kv"><span>公务</span><b id="t-service">0</b></div>
+    <div class="cong-bar"><i id="cong-fill"></i></div>
+    <div id="net-warn" class="net-warn hidden"></div>
+    <p class="hint">道路颜色由灰到红表示拥堵程度。放大路口可观察排队回溯。</p>
+  </section>
+
+  <section class="ptab hidden" id="ptab-cities">
+    <h4>我的城市</h4>
+    <div class="row">
+      <input type="text" id="city-name" placeholder="城市名称" maxlength="20">
+      <button id="btn-rename">改名</button>
+      <button id="btn-create">新建</button>
+    </div>
+    <div class="row">
+      <button id="btn-clone" class="wide">复制当前城市（生成可分享副本）</button>
+    </div>
+    <h4>公开城市</h4>
+    <div class="city-list" id="city-list"><div class="muted">加载中…</div></div>
+  </section>
+
+  <section class="ptab hidden" id="ptab-civic">
+    <h4>人口来源（人口不会凭空出现）</h4>
+    <div class="kv"><span>🚗 外来移民（车开进来）</span><b id="c-imm">0</b></div>
+    <div class="kv"><span>👶 新生儿</span><b id="c-birth">0</b></div>
+    <div class="kv"><span>💀 死亡</span><b id="c-death">0</b></div>
+    <div class="kv"><span>🚗 迁出（车开出城）</span><b id="c-emig">0</b></div>
+    <div class="kv"><span>⏳ 待安置（没房）</span><b id="c-wait">0</b></div>
+    <h4>车队（守恒）</h4>
+    <div class="kv"><span>车辆总数</span><b id="c-fleet">0</b></div>
+    <div class="kv"><span>其中特种车辆</span><b id="c-fleetsp">0</b></div>
+    <div class="kv"><span>已报废</span><b id="c-scrapped">0</b></div>
+    <h4>进行中的事件</h4>
+    <div id="c-events" class="ev-list"><div class="muted">暂无事件</div></div>
+    <h4>事件累计</h4>
+    <div class="kv"><span>🔥 火灾</span><b id="c-fire">0</b></div>
+    <div class="kv"><span>🚓 犯罪</span><b id="c-crime">0</b></div>
+    <div class="kv"><span>🚑 疾病</span><b id="c-dis">0</b></div>
+    <div class="kv"><span>⚠ 事故</span><b id="c-acc">0</b></div>
+    <div class="kv"><span>✅ 已处理</span><b id="c-res">0</b></div>
+    <div class="kv"><span>❌ 无人处理</span><b id="c-fail">0</b></div>
+    <p class="hint">事件必须由<b>特种车辆</b>处理：消防车救火、警车抓贼、救护车治病。
+    特种车辆随特种建筑一起诞生 —— 没有消防站，火就没人救。</p>
+  </section>
+</aside>
+
+<!-- ===================== 提示条 ===================== -->
+<div class="toasts" id="toasts"></div>
+
+<!-- ===================== 帮助 ===================== -->
+<div class="help-card" id="help">
+  <h3>操作指南</h3>
+  <ul>
+    <li><b>左键拖拽</b>：绘制道路 / 划分区域 / 拆除（<b>选择模式</b>下左键拖拽 = 3D 转视角）</li>
+    <li><b>右键拖拽</b>：平移　<b>中键 / Alt+左键</b>：平移　<b>Q/E</b>：旋转</li>
+    <li><b>滚轮</b>：缩放　<b>WASD / 方向键</b>：移动</li>
+    <li><b>空格</b>：暂停 / 继续　<b>1-5</b>：调整速度</li>
+    <li><b>R</b> 道路　<b>Z</b> 分区　<b>S</b> 服务　<b>G</b> 出入口　<b>L</b> 车道　<b>X</b> 拆除　<b>V</b> 数据视图</li>
+    <li>画路时默认<b>自动吸附成水平/垂直直线</b>（手抖也不会画歪）；按住 <b>Shift</b> 拖拽可画斜线，道路选项里还有<b>曲率</b>可以画弧线</li>
+    <li>道路选项中可开启<b>高架</b>（自动生成坡道、可与其他道路立体交叉）</li>
+    <li>电力与供水由<b>发电厂 / 水塔</b>按覆盖半径<b>自动覆盖</b>，无需铺设水管电线；但要先有它们，地块才会长出房子</li>
+  </ul>
+  <h3>城市怎么运转</h3>
+  <ul>
+    <li><b>交通是核心</b>：市民开车从住宅区去工业区/商业区上班，货车把工业品送到商业区，下班再去商业区消费后回家。</li>
+    <li><b>两个时钟</b>：城市时钟（人口、税收、昼夜）走得快，交通时钟（车速、信号灯、排队）接近真实时间 —— 所以你能真正看清车怎么开、怎么堵。</li>
+    <li><b>会堵车</b>：路口要排队、绿灯要等、车道有碰撞体积不能重叠，车多了就会<b>排队回溯</b>，一路堵到上游街区。</li>
+    <li><b>堵车有后果</b>：拥堵会拉低工业/商业效率 → 商业倒闭降级 → 人口与税收下降。修路、加宽、增设出入口都能缓解。</li>
+    <li><b>高速出入口</b>：建在地图边缘的道路上，城市与外界连通，外来人口更容易流入。</li>
+  </ul>
+  <p class="tip">开局建议：<b>一键建初级小城</b> → 看交通面板 → 慢慢扩容。也可以自己来：发电厂 + 水塔 → 主干道 → 住宅 → 商业/工业 → 高速出入口。</p>
+  <button id="help-close">开始建设</button>
+</div>
+
+<div class="loading" id="loading"><div class="spin"></div><span>正在连接城市服务器…</span></div>
+
+<script src="./build/app.js"></script>
+</body>
+</html>
