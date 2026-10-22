@@ -45,6 +45,8 @@ export class EventSystem {
     const city = this.city;
     const hours = 5 / 60;
     const pop = city.stats.population || 0;
+    // 城市越小，事件越少（小城市不会一天发生 8 起火灾）
+    const popScale = Math.min(2, 0.4 + pop / 1200);
     const hour = city.hourOfDay;
     // 事件太密集会毁掉可玩性 -> 同时进行的同类事件有上限
     const cap = 3;
@@ -74,7 +76,7 @@ export class EventSystem {
         rate = cfg.ratePerVehicleHour * veh * this._trafficHours();
         rate *= 1 + (city.traffic.stats.congestion || 0) / 40 * cfg.congestionBonus;
       }
-      if (Math.random() < rate) {
+      if (Math.random() < rate * popScale) {
         const tile = this._pickTile(key);
         if (tile >= 0) this.spawn(key, tile);
       }
@@ -228,7 +230,9 @@ export class EventSystem {
       }
       city.stats.happiness = Math.max(0, (city.stats.happiness || 70) - cfg.happinessHit);
     } else if (e.type === 'crime') {
-      const fine = cfg.fine + Math.floor(Math.random() * cfg.fine);
+      // 罚款随城市规模放大（小城市不至于被一次犯罪拖垮）
+      const scale = 1 + Math.min(6, (city.stats.population || 0) / 700);
+      const fine = Math.round((cfg.fine + Math.random() * cfg.fine) * scale);
       city.funds = Math.max(0, city.funds - fine);
       this.stats.fines += fine;
       city.stats.happiness = Math.max(0, (city.stats.happiness || 70) - cfg.happinessHit);

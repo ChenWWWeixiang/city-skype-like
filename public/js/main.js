@@ -134,7 +134,7 @@ async function main() {
   let fpsAcc = 0, fpsCount = 0, fpsTimer = 0;
   const fpsEl = document.createElement('div');
   fpsEl.className = 'stat';
-  fpsEl.style.cssText = 'position:fixed;left:10px;bottom:10px;z-index:19;font-size:11px;padding:3px 8px';
+  fpsEl.style.cssText = 'position:fixed;right:284px;bottom:10px;z-index:19;font-size:11px;padding:3px 8px';
   document.body.appendChild(fpsEl);
   let vehCount = 0;
   let movingCount = 0;

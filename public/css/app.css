@@ -170,7 +170,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
   border:1px solid rgba(217,84,77,.5);color:#ffb0a8;font-size:11px;line-height:1.6}
 
 /* ---------------- 新手引导 ---------------- */
-.tutorial{position:fixed;left:10px;bottom:34px;z-index:20;width:256px;padding:10px 11px;
+.tutorial{position:fixed;left:78px;bottom:12px;z-index:20;width:256px;padding:10px 11px;
   background:var(--panel);border:1px solid var(--line);border-radius:10px;backdrop-filter:blur(10px);
   box-shadow:0 10px 30px rgba(0,0,0,.4)}
 .tutorial.folded{display:none}
@@ -200,7 +200,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 @media (max-height:700px){.tutorial{display:none}}
 
 /* 收起引导后的小按钮 */
-.tut-launch{position:fixed;left:10px;bottom:34px;z-index:20;display:none;height:28px;padding:0 12px;
+.tut-launch{position:fixed;left:78px;bottom:12px;z-index:20;display:none;height:28px;padding:0 12px;
   border-radius:16px;background:var(--panel);border:1px solid var(--line);color:var(--accent);
   font-size:11.5px;cursor:pointer;backdrop-filter:blur(10px);box-shadow:0 6px 18px rgba(0,0,0,.35)}
 .tut-launch.show{display:block}

@@ -380,6 +380,8 @@ export class City {
       { tile: T(20, 18), id: 'power' },      // 发电厂：没有电就不会长房子
       { tile: T(28, 30), id: 'water' },      // 水塔
       { tile: T(30, 18), id: 'clinic' },     // 诊所
+      { tile: T(14, 26), id: 'police' },     // 警察局：处理犯罪（否则罚款 + 幸福度下降）
+      { tile: T(26, 16), id: 'fire' },       // 消防站：处理火灾（否则房子会烧掉）
     ];
     const gateTile = T(0, 24);               // 地图西边缘的高速出入口
 
@@ -812,10 +814,11 @@ export class City {
     }
     city.rebuildNetwork();
     city.refreshAggregates();
-    if (!city.demography.pop && city.stats.population > 0) {
-      // 老存档 / 旧版城市：把已有的人口搬进账本，人口不会归零
+    // 老存档 / 旧版城市：把地块里已有的人口搬进账本（人口不会归零，账本与地块对齐）
+    if (city.stats.population > 0) {
       city.demography.pop = city.stats.population;
       city.demography.housed = city.stats.population;
+      city.demography.waiting = 0;
     }
     // 特种建筑 -> 特种车辆（车随建筑来）
     city.rebuildSpecialFleet();

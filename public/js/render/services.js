@@ -102,7 +102,9 @@ export class ServiceRenderer {
     this.meshes = {};
     for (const id of Object.keys(GEO)) {
       const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.78, metalness: 0.08 });
-      const m = new THREE.InstancedMesh(GEO[id](), mat, 120);
+      const g = GEO[id]();
+      g.scale(1.35, 1.35, 1.35);       // 特种建筑要比普通楼更醒目
+      const m = new THREE.InstancedMesh(g, mat, 120);
       m.castShadow = true;
       m.receiveShadow = true;
       m.count = 0;
@@ -121,6 +123,18 @@ export class ServiceRenderer {
     this.beacon.frustumCulled = false;
     this.beacon.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.group.add(this.beacon);
+
+    // 特种设施的「光柱」：远远就能看出这里有警察局/消防站/诊所/学校
+    const beamGeo = new THREE.CylinderGeometry(0.8, 1.2, 12, 8, 1, true);
+    beamGeo.translate(0, 6, 0);
+    this.beams = new THREE.InstancedMesh(beamGeo, new THREE.MeshBasicMaterial({
+      transparent: true, opacity: 0.42, depthWrite: false, side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending, toneMapped: false,
+    }), 140);
+    this.beams.count = 0;
+    this.beams.frustumCulled = false;
+    this.beams.renderOrder = 6;
+    this.group.add(this.beams);
 
     this._m = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
@@ -156,7 +170,7 @@ export class ServiceRenderer {
         mesh.setColorAt(n, this._c.setHex(0xffffff));
         counts[sid] = n + 1;
       }
-      this.positions.push({ x: wx, z: wz, id: sid, h: 11.5 });
+      this.positions.push({ x: wx, z: wz, id: sid, h: 15.5 });
     }
     for (const id of Object.keys(this.meshes)) {
       const mesh = this.meshes[id];
@@ -171,20 +185,35 @@ export class ServiceRenderer {
   updateBeacons(dt) {
     this.t += dt;
     const m = this._m, q = this._q, p = this._p, s = this._s;
-    let n = 0;
+    let n = 0, nb = 0;
     for (const it of this.positions) {
-      if (n >= this.beacon.instanceMatrix.count) break;
-      const bob = Math.sin(this.t * 2.2 + it.x * 0.1) * 0.5;
-      p.set(it.x, it.h + bob, it.z);
-      s.set(1, 1, 1);
-      m.compose(p, q, s);
-      this.beacon.setMatrixAt(n, m);
-      const pulse = 0.55 + 0.45 * Math.sin(this.t * 4 + it.z * 0.05);
-      this.beacon.setColorAt(n, this._c.setHex(BEACON[it.id] || 0xffffff).multiplyScalar(0.6 + pulse * 1.4));
-      n++;
+      if (n < this.beacon.instanceMatrix.count) {
+        const bob = Math.sin(this.t * 2.2 + it.x * 0.1) * 0.6;
+        p.set(it.x, it.h + bob, it.z);
+        s.set(1.5, 1.5, 1.5);
+        m.compose(p, q, s);
+        this.beacon.setMatrixAt(n, m);
+        const pulse = 0.55 + 0.45 * Math.sin(this.t * 4 + it.z * 0.05);
+        this.beacon.setColorAt(n, this._c.setHex(BEACON[it.id] || 0xffffff).multiplyScalar(0.7 + pulse * 1.5));
+        n++;
+      }
+      // 光柱：只有「需要出动」的特种设施才发光柱
+      if (nb < this.beams.instanceMatrix.count && (it.id === 1 || it.id === 2 || it.id === 3 || it.id === 4)) {
+        q.setFromAxisAngle(this._up, this.t * 0.5 + it.x);
+        p.set(it.x, 0.2, it.z);
+        s.set(1, 1, 1);
+        m.compose(p, q, s);
+        this.beams.setMatrixAt(nb, m);
+        const pulse = 0.6 + 0.4 * Math.sin(this.t * 2.4 + it.z * 0.07);
+        this.beams.setColorAt(nb, this._c.setHex(BEACON[it.id] || 0xffffff).multiplyScalar(0.5 + pulse * 0.7));
+        nb++;
+      }
     }
     this.beacon.count = n;
     this.beacon.instanceMatrix.needsUpdate = true;
     if (this.beacon.instanceColor) this.beacon.instanceColor.needsUpdate = true;
+    this.beams.count = nb;
+    this.beams.instanceMatrix.needsUpdate = true;
+    if (this.beams.instanceColor) this.beams.instanceColor.needsUpdate = true;
   }
 }

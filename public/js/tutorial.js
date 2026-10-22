@@ -44,6 +44,13 @@ export class Tutorial {
         check: () => this.countService() >= 2,
       },
       {
+        id: 'guard',
+        title: '建消防站 + 警察局',
+        hint: '城市会起火、会有犯罪。消防车和警车**随建筑一起诞生**（车不会凭空出现），' +
+          '没有消防站，火就没人救、房子会烧掉；没有警察局，犯罪会罚款并拉低幸福度。',
+        check: () => this.countServiceType(1) >= 1 && this.countServiceType(2) >= 1,
+      },
+      {
         id: 'traffic',
         title: '让城市跑起来：人口 > 50 且路上有 8 辆车',
         hint: '速度调到 2× / 3×，观察车辆行驶、路口排队，右侧「交通」页能看到拥堵路段。',
@@ -72,6 +79,12 @@ export class Tutorial {
   countService() {
     let n = 0;
     for (let i = 0; i < state.service.length; i++) if (state.service[i]) n++;
+    return n;
+  }
+  /** 统计某类型的服务设施数量（1=警察局 2=消防站 3=诊所 4=学校 5=公园 6=发电厂 7=水塔） */
+  countServiceType(type) {
+    let n = 0;
+    for (let i = 0; i < state.service.length; i++) if (state.service[i] === type) n++;
     return n;
   }
   taxChanged() {
@@ -165,7 +178,7 @@ export class Tutorial {
 
   /** 点击某一步 -> 切到对应工具并高亮提示 */
   focusStep(s) {
-    const map = { road: 'road', entrance: 'entrance', res: 'zone', comind: 'zone', svc: 'service', traffic: 'select', tax: 'select' };
+    const map = { road: 'road', entrance: 'entrance', res: 'zone', comind: 'zone', svc: 'service', guard: 'service', traffic: 'select', tax: 'select' };
     const t = map[s.id];
     if (t) {
       const btn = document.querySelector('.tool[data-tool="' + t + '"]');

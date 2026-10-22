@@ -213,37 +213,37 @@ export const DEMOGRAPHY = {
 export const INCIDENTS = {
   fire: {
     id: 'fire', name: '火灾', icon: '🔥', color: 0xff5a1f, service: 'fire',
-    ratePerBuildingHour: 0.00018,   // 每游戏小时每栋建筑的基础起火率
+    ratePerBuildingHour: 0.00005,   // 每游戏小时每栋建筑的基础起火率
     industrialBonus: 3.0,           // 工业区起火概率倍率
     growPerHour: 0.16,               // 严重度增长（每小时）
-    resolveHours: 1.6,               // 消防车到场后的处置时间
+    resolveHours: 2.6,               // 消防车到场后的处置时间
     damageLevels: 1,                 // 扑灭失败 -> 建筑等级 -1
     happinessHit: 6,
   },
   crime: {
     id: 'crime', name: '犯罪', icon: '🚓', color: 0xffd23f, service: 'police',
-    ratePerBuildingHour: 0.00120,
+    ratePerBuildingHour: 0.00030,
     commercialBonus: 2.2, nightBonus: 2.0,
     growPerHour: 0.22,
-    resolveHours: 1.2,
-    fine: 260,                       // 未被制止的损失
+    resolveHours: 2.0,
+    fine: 90,                        // 未被制止的损失（还会按城市规模放大）
     happinessHit: 2.5,
   },
   disease: {
     id: 'disease', name: '疾病', icon: '🚑', color: 0x63d97a, service: 'ambulance',
-    ratePerBuildingHour: 0.00012,
+    ratePerBuildingHour: 0.00004,
     densityBonus: 1.0,               // 住宅密度越高越容易爆发
     growPerHour: 0.12,
-    resolveHours: 2.4,
+    resolveHours: 3.2,
     fatality: 0.30,                  // 未及时救治的死亡率
     happinessHit: 3.0,
   },
   accident: {
     id: 'accident', name: '事故', icon: '⚠', color: 0xff8c1a, service: 'police',
-    ratePerVehicleHour: 0.00080,     // 按在途车辆数产生
+    ratePerVehicleHour: 0.00020,     // 按在途车辆数产生
     congestionBonus: 2.6,            // 越堵越容易出事故
     growPerHour: 0.0,
-    resolveHours: 0.7,
+    resolveHours: 1.3,
     blockMinutes: 40,                // 占用车道的时间（游戏分钟）
     happinessHit: 1.2,
   },
