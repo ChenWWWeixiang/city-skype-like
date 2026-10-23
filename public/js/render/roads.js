@@ -114,7 +114,7 @@ export class RoadRenderer {
     scene.add(this.laneBands);
 
     // 高架桥墩
-    const pillarGeo = new THREE.CylinderGeometry(1.5, 1.8, 1, 8);
+    const pillarGeo = new THREE.CylinderGeometry(1.1, 1.4, 1, 8);
     pillarGeo.translate(0, 0.5, 0);
     this.pillars = new THREE.InstancedMesh(pillarGeo, new THREE.MeshStandardMaterial({
       color: 0x9aa0a8, roughness: 0.9,
@@ -251,8 +251,10 @@ export class RoadRenderer {
         ranges.push([start, vbase]);
         tiles.push(i);
 
-        // 桥墩：地面层的「桥」要架在河床上；高架层要架在地面上
-        if (pillarCount < this.pillars.instanceMatrix.count) {
+        // 桥墩：地面层的「桥」要架在河床上；高架层要架在地面上。
+        // 下方已经有地面道路的格子不立柱子 —— 否则柱子会正好挡在下层车道中间。
+        const underRoad = inst.layer === 1 && state.road[i];
+        if (!underRoad && pillarCount < this.pillars.instanceMatrix.count) {
           const ground = (state.height && state.height[i]) || 0;
           const span = inst.h - ground;
           if (span > 2.2) {

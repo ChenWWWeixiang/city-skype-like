@@ -198,6 +198,8 @@ export const TRAFFIC = {
   TURN_SPEED: 0.45,        // 路口转弯限速系数
   TURN_ANGLE: 0.55,        // 超过这个转角(rad)就算「转弯」
   INTERSECTION_ZONE: 9,     // 路口影响半径 (m)：进入路口就开始减速
+  TURN_RADIUS: 11,         // 转弯圆滑半径 (m)：车辆在路口走一段弧线，而不是直角折线
+  LANE_CHANGE_RATE: 2.0,   // 变道横向移动速率（1/秒）：变道要「滑过去」，不能瞬移
   GRADE_SPEED: 0.55,       // 坡度对车速的额外影响系数（每 10% 坡度）
   // 特种车辆（外形参数）
   SPECIAL_TYPES: {

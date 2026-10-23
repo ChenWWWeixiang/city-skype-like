@@ -1228,12 +1228,21 @@ export class TrafficSim {
         if (canEnter) {
           // 目标路段入口是否有空间（且车道类型允许）
           let laneOk = false;
-          for (let l = 0; l < nextArc.lanes; l++) {
+          // 已经选好的车道优先：每帧重新选会让车辆在路口前左右横跳
+          const tryLane = (l) => {
+            if (l < 0 || l >= nextArc.lanes) return false;
             const lt = (nextArc.laneTypes || [])[l] || 0;
-            if (!this._laneAllowed(lt, veh.type)) continue;
-            const near = this._nearestAhead(nextArc.laneVehicles[l], -1);
-            const first = near ? this._minDist(nextArc.laneVehicles[l]) : Infinity;
-            if (first > TRAFFIC.ENTRY_GAP + veh.len) { laneOk = true; veh.nextLane = l; break; }
+            if (!this._laneAllowed(lt, veh.type)) return false;
+            const first = this._minDist(nextArc.laneVehicles[l]);
+            return first > TRAFFIC.ENTRY_GAP + veh.len;
+          };
+          if (veh.nextLane !== undefined && tryLane(veh.nextLane)) {
+            laneOk = true;
+          } else {
+            for (let l = 0; l < nextArc.lanes; l++) {
+              if (!tryLane(l)) continue;
+              veh.nextLane = l; laneOk = true; break;
+            }
           }
           canEnter = laneOk;
         }
@@ -1361,6 +1370,7 @@ export class TrafficSim {
           this._removeFromArc(veh, arc);
           veh.arc = nextArcId;
           veh.lane = lane;
+          veh.turnPlan = null;     // 换段 -> 重新规划转弯曲线
           veh.dist = 0;
           veh.pathIdx++;
           node.passing++;
@@ -1369,6 +1379,10 @@ export class TrafficSim {
           nextArc.vehicles.push(veh);
           arc = net.arcs[veh.arc];
           veh.nextLane = undefined;
+          // 位置连续性：换段时新旧两段的几何起点可能差几米（车道偏移、转弯收尾等），
+          // 直接跳过去会看到「啪」的一下。这里记下换段前的位置，
+          // 在本帧末把差值补上（之后 0.3 秒内平滑归零）。
+          veh._preTransX = veh.x; veh._preTransZ = veh.z; veh._justTrans = true;
         } else {
           // 无法进入下一段：停在路口前排队（溢出交通回溯）
           veh.dist = arc.length - 0.5;
@@ -1388,8 +1402,31 @@ export class TrafficSim {
       }
 
       // 位置与朝向（按车道做横向偏移）
+      // 视觉车道平滑：变道时横向「滑」到新车道，而不是瞬间跳过去（否则会左右摇摆）
+      if (veh.laneVis === undefined) veh.laneVis = veh.lane;
+      const dLane = veh.lane - veh.laneVis;
+      if (Math.abs(dLane) > 1e-3) {
+        veh.laneVis += dLane * Math.min(1, dt * TRAFFIC.LANE_CHANGE_RATE);
+        if (Math.abs(veh.lane - veh.laneVis) < 0.01) veh.laneVis = veh.lane;
+      }
       const p = polyPoint(arc.poly, veh.dist, arc.length);
       this._placeOnLane(veh, arc, p);
+      // 路口转弯：用三次贝塞尔把「直行 -> 转弯 -> 直行」连成一条平滑的弧线。
+      // 否则车辆在路口会瞬间改变朝向（看起来像原地打方向 / 左右摇摆 / 跳变）。
+      this._smoothTurn(veh, arc, net);
+      if (veh._justTrans) {
+        veh._justTrans = false;
+        veh.posFixX = (veh.posFixX || 0) + (veh._preTransX - veh.x);
+        veh.posFixZ = (veh.posFixZ || 0) + (veh._preTransZ - veh.z);
+      }
+      // 位置补正（换段时的几何误差）平滑衰减
+      if (veh.posFixX || veh.posFixZ) {
+        veh.x += veh.posFixX; veh.z += veh.posFixZ;
+        const decay = Math.max(0, 1 - dt * 3.5);
+        veh.posFixX *= decay; veh.posFixZ *= decay;
+        if (Math.abs(veh.posFixX) < 0.01 && Math.abs(veh.posFixZ) < 0.01) { veh.posFixX = 0; veh.posFixZ = 0; }
+      }
+      veh._prevRenderX = veh.x; veh._prevRenderZ = veh.z;
       if (veh.v < 0.5) veh.wait += dt; else veh.wait = 0;
     }
   }
@@ -1405,7 +1442,9 @@ export class TrafficSim {
     // arc.lane 是「本方向」的车道序号（0 = 最右），需要换算成全局编号 g。
     const N = arc.def.lanes;
     const laneW = arc.def.width / N;
-    const g = arc.side < 0 ? veh.lane : (N - 1 - veh.lane);
+    // 用「视觉车道」（小数）算横向位置：变道时车辆是横向滑过去，不是瞬移
+    const lv = Math.max(0, Math.min(N - 1, veh.laneVis === undefined ? veh.lane : veh.laneVis));
+    const g = arc.side < 0 ? lv : (N - 1 - lv);
     let off = arc.side * (g - (N - 1) / 2) * laneW;
     // 停放的车挪到马路牙子外侧（路肩），避免和行驶车辆穿模
     if (veh.parked) off = arc.side * (arc.def.width / 2 + 0.95);
@@ -1421,6 +1460,77 @@ export class TrafficSim {
     let m = Infinity;
     for (const v of laneList) if (v.dist < m) m = v.dist;
     return m;
+  }
+
+  /**
+   * 路口转弯平滑：
+   *   车辆进入路口前 R 米时，开始沿三次贝塞尔曲线过渡到下一条路的车道中心线上，
+   *   曲线的起点切于本段方向、终点切于下一段方向 -> 朝向连续变化，没有直角折返。
+   */
+  _smoothTurn(veh, arc, net) {
+    const R = TRAFFIC.TURN_RADIUS;
+    const remain = arc.length - veh.dist;
+    let target = veh.heading;       // 默认：沿折线方向
+    if (remain <= R && remain >= -0.6) {
+      const nextId = veh.path[veh.pathIdx + 1];
+      const nextArc = nextId !== undefined && nextId >= 0 ? net.arcs[nextId] : null;
+      if (nextArc && arc.poly && nextArc.poly && nextArc.poly.length >= 2 && arc.poly.length >= 2) {
+        // 转弯计划只算一次并缓存：目标车道每帧可能变化（被别的车占掉），
+        // 若每帧重算，车会在路口前横向乱跳。
+        if (!veh.turnPlan || veh.turnPlan.nextId !== nextId) {
+          const a = arc.poly[arc.poly.length - 2], b = arc.poly[arc.poly.length - 1];
+          const dirA = Math.atan2(b.x - a.x, b.z - a.z);
+          const c = nextArc.poly[0], d = nextArc.poly[1];
+          const dirB = Math.atan2(d.x - c.x, d.z - c.z);
+          const s0 = Math.max(0, arc.length - R);
+          const p0 = polyPoint(arc.poly, s0, arc.length);
+          const p3 = { x: nextArc.poly[0].x, z: nextArc.poly[0].z, y: nextArc.poly[0].y || 0 };
+          const k = 0.55 * R;
+          const p1 = { x: p0.x + Math.sin(dirA) * k, z: p0.z + Math.cos(dirA) * k, y: p0.y || 0 };
+          const p2 = { x: p3.x - Math.sin(dirB) * k, z: p3.z - Math.cos(dirB) * k, y: p3.y };
+          const lv = veh.laneVis === undefined ? veh.lane : veh.laneVis;
+          const offA = this._laneOffsetVec(arc, lv, dirA);
+          const nextLane = Math.min(veh.nextLane ?? 0, Math.max(0, nextArc.lanes - 1));
+          const offB = this._laneOffsetVec(nextArc, nextLane, dirB);
+          veh.turnPlan = { nextId, dirA, dirB, p0, p1, p2, p3, offA, offB };
+        }
+        {
+          const { dirA, dirB, p0, p1, p2, p3, offA, offB } = veh.turnPlan;
+          // 曲线起点：本段中心线上 R 米处；终点：路口中心（下一段起点）
+          const t = Math.max(0, Math.min(1, (R - remain) / R));
+          const u = 1 - t;
+          const cx = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x;
+          const cz = u * u * u * p0.z + 3 * u * u * t * p1.z + 3 * u * t * t * p2.z + t * t * t * p3.z;
+          const cy = (u * u * u * (p0.y || 0)) + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y;
+          const tx = 3 * u * u * (p1.x - p0.x) + 6 * u * t * (p2.x - p1.x) + 3 * t * t * (p3.x - p2.x);
+          const tz = 3 * u * u * (p1.z - p0.z) + 6 * u * t * (p2.z - p1.z) + 3 * t * t * (p3.z - p2.z);
+          // 车道横向偏移：本段车道 -> 下一段车道，在路口内平滑过渡
+          veh.x = cx + offA.x + (offB.x - offA.x) * t;
+          veh.z = cz + offA.z + (offB.z - offA.z) * t;
+          veh.y = cy;
+          target = Math.atan2(tx, tz);
+        }
+      }
+    }
+    // 朝向变化速率限制：单帧最多转 ~14°，任何原因都不会「瞬间翻面」
+    const ref = veh.renderHeading === undefined ? target : veh.renderHeading;
+    let dd = target - ref;
+    while (dd > Math.PI) dd -= Math.PI * 2;
+    while (dd < -Math.PI) dd += Math.PI * 2;
+    const maxTurn = 0.25;
+    if (Math.abs(dd) > maxTurn) dd = Math.sign(dd) * maxTurn;
+    veh.heading = ref + dd;
+    veh.renderHeading = veh.heading;
+  }
+
+  /** 某条路段上某条车道的横向偏移向量（世界坐标） */
+  _laneOffsetVec(arc, lane, heading) {
+    const N = arc.def.lanes;
+    const laneW = arc.def.width / N;
+    const lv = Math.max(0, Math.min(N - 1, lane));
+    const g = arc.side < 0 ? lv : (N - 1 - lv);
+    const off = arc.side * (g - (N - 1) / 2) * laneW;
+    return { x: Math.cos(heading) * off, z: -Math.sin(heading) * off };
   }
 
   _tryLaneChange(veh, arc) {

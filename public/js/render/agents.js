@@ -14,7 +14,7 @@ function box(w, h, d, x, y, z) {
 function sedanGeo() {
   return mergeGeometries([
     box(1.85, 0.95, 4.1, 0, 0.55, 0),
-    box(1.65, 0.72, 2.1, 0, 1.32, -0.15),
+    box(1.65, 0.72, 2.1, 0, 1.32, 0.15),   // 驾驶舱在前（车头朝 +Z = 行驶方向）
   ]);
 }
 function truckGeo() {
@@ -76,9 +76,9 @@ function specialGeo(kind) {
   if (kind === 'police') {
     return mergeGeometries([
       cbox(1.9, 0.9, 4.2, 0, 0.55, 0, 0xf2f4f8),
-      cbox(1.7, 0.7, 2.1, 0, 1.3, -0.15, 0x1b3a6b),
-      cbox(1.95, 0.34, 1.0, 0, 1.72, -0.15, 0x1b3a6b),   // 顶灯条底座
-      cbox(0.6, 0.3, 0.5, 0, 1.95, -0.15, 0x3355ff),
+      cbox(1.7, 0.7, 2.1, 0, 1.3, 0.15, 0x1b3a6b),
+      cbox(1.95, 0.34, 1.0, 0, 1.72, 0.15, 0x1b3a6b),   // 顶灯条底座
+      cbox(0.6, 0.3, 0.5, 0, 1.95, 0.15, 0x3355ff),
     ]);
   }
   if (kind === 'fire') {
@@ -117,7 +117,7 @@ function specialGeo(kind) {
   return mergeGeometries([
     cbox(2.5, 2.4, 10.0, 0, 1.5, 0, 0xe8b62c),
     cbox(2.55, 0.7, 9.0, 0, 2.0, 0, 0xd8a41f),
-    cbox(2.2, 0.5, 0.12, 0, 1.9, -5.05, 0x2b2f36),
+    cbox(2.2, 0.5, 0.12, 0, 1.9, 5.05, 0x2b2f36),   // 车头（引擎盖）朝 +Z
   ]);
 }
 const SPECIAL_MESH = { 4: 'police', 5: 'fire', 6: 'ambulance', 7: 'hearse', 8: 'garbage', 9: 'schoolbus' };
