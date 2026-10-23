@@ -22,6 +22,41 @@ export const worldX = (x) => (x + 0.5) * MAP.TILE - (MAP.SIZE * MAP.TILE) / 2;
 export const worldZ = (z) => (z + 0.5) * MAP.TILE - (MAP.SIZE * MAP.TILE) / 2;
 export const dirByBit = (bit) => DIRS.find((d) => d.bit === bit);
 
+/** 两个瓦片之间的方向位（与 DIRS 的 bit 一致） */
+export function dirBitBetween(a, b) {
+  const ax = a % MAP.SIZE, az = Math.floor(a / MAP.SIZE);
+  const bx = b % MAP.SIZE, bz = Math.floor(b / MAP.SIZE);
+  const dx = bx - ax, dz = bz - az;
+  if (dx === 0 && dz === 0) return 0;
+  if (dx === 0) return dz < 0 ? 1 : 16;
+  if (dz === 0) return dx > 0 ? 4 : 64;
+  if (dx > 0) return dz < 0 ? 2 : 8;
+  return dz > 0 ? 32 : 128;
+}
+
+/**
+ * 一条道路路径 -> 每格的道路走向位掩码（8 方向）。
+ * 路网连接关系直接用这个掩码，而不是「看邻居有没有路」——
+ * 后者会在斜向道路旁边凭空造出斜向捷径（在街区中间多出一个路口）。
+ */
+export function pathDirMasks(tiles) {
+  const out = new Map();
+  const set = (i, bit) => { out.set(i, (out.get(i) || 0) | bit); };
+  for (let k = 1; k < tiles.length; k++) {
+    const a = tiles[k - 1], b = tiles[k];
+    // 必须是相邻的两格（8 连通）。调用方有时会一次传入一堆不按顺序排的瓦片
+    // （比如「同时建三条路」），这种就整个放弃记录，退回邻居推断。
+    const adx = Math.abs(a % MAP.SIZE - b % MAP.SIZE);
+    const adz = Math.abs(Math.floor(a / MAP.SIZE) - Math.floor(b / MAP.SIZE));
+    if (adx > 1 || adz > 1) return new Map();
+    const bit = dirBitBetween(a, b);
+    if (!bit) continue;
+    set(a, bit);
+    set(b, dirBitBetween(b, a));
+  }
+  return out;
+}
+
 /**
  * 由「驶入路口的行驶方向」反推进口方向：
  *   朝南开(+Z) 的人来自北方 -> 'N'；朝北开的人来自南方 -> 'S'；
@@ -65,12 +100,24 @@ function canConnect(a, b) {
   return Math.abs(a.h - b.h) <= 0.6;
 }
 
+/** 该格记录的道路走向掩码（新存档有；老存档为 0） */
+function storedDirs(tiles, tile, layer) {
+  const t = tiles[tile];
+  if (!t) return 0;
+  return layer === 1 ? (t.od | 0) : (t.rd | 0);
+}
+
 export function computeMasks(tiles) {
   const { list, at } = collectLayers(tiles);
   const S = MAP.SIZE;
   for (const a of list) {
     const x = a.tile % S, z = Math.floor(a.tile / S);
+    // 新存档：直接用「这条路实际往哪走」决定连通关系。
+    // 旧存档没有记录，退回邻居推断（斜向要同方向再往前一格也有路）。
+    const dirs = storedDirs(tiles, a.tile, a.layer);
     for (const d of DIRS) {
+      // 记录了走向 -> 只沿着这条路真正延伸的方向连通
+      if (dirs && !(dirs & d.bit)) continue;
       const nx = x + d.dx, nz = z + d.dz;
       if (nx < 0 || nz < 0 || nx >= S || nz >= S) continue;
       const nbIdx = at.get(tileIndex(nx, nz));
@@ -78,7 +125,7 @@ export function computeMasks(tiles) {
       // 斜向连接：只有当这两格同属一条连续的斜向道路时才建立
       // （斜向至少连成 2 格的一串）。否则十字路口的两个转角格会被
       // 误判为斜路，从而生成大量"抄近路"的对角边，破坏轴向与信号灯相位。
-      if (d.axis === 'd') {
+      if (d.axis === 'd' && !dirs) {
         const b = tileIndex(nx, nz);
         const bx = nx + d.dx, bz = nz + d.dz;      // 同方向再往前一格
         const cx = x - d.dx, cz = z - d.dz;         // 同方向再往前一格
@@ -188,8 +235,8 @@ export function buildNetwork(tiles, roadDefs) {
     if (nx < 0 || nz < 0 || nx >= S || nz >= S) return -1;
     const nbIdx = at.get(tileIndex(nx, nz));
     if (!nbIdx) return -1;
-    // 与 computeMasks 保持一致的斜向判定
-    if (d.axis === 'd') {
+    // 与 computeMasks 保持一致的斜向判定（新存档有走向记录时以记录为准）
+    if (d.axis === 'd' && !storedDirs(tiles, a.tile, a.layer)) {
       const c1 = tiles[tileIndex(a.tile % S + d.dx, Math.floor(a.tile / S))];
       const c2 = tiles[tileIndex(a.tile % S, Math.floor(a.tile / S) + d.dz)];
       const b1 = c1.road || c1.over, b2 = c2.road || c2.over;
@@ -211,16 +258,53 @@ export function buildNetwork(tiles, roadDefs) {
     return hit;
   };
 
+  /** 只找「同层」的邻居（用于挑边时优先走同层直连） */
+  const neighborSameLayer = (ltIdx, d) => {
+    const a = list[ltIdx];
+    const x = a.tile % S, z = Math.floor(a.tile / S);
+    const nx = x + d.dx, nz = z + d.dz;
+    if (nx < 0 || nz < 0 || nx >= S || nz >= S) return -1;
+    const nbIdx = at.get(tileIndex(nx, nz));
+    if (!nbIdx) return -1;
+    if (d.axis === 'd' && !storedDirs(tiles, a.tile, a.layer)) {
+      const c1 = tiles[tileIndex(a.tile % S + d.dx, Math.floor(a.tile / S))];
+      const c2 = tiles[tileIndex(a.tile % S, Math.floor(a.tile / S) + d.dz)];
+      const b1 = c1.road || c1.over, b2 = c2.road || c2.over;
+      if (b1 && b2) return -1;
+    }
+    for (const bi of nbIdx) {
+      const b = list[bi];
+      if (b.layer !== a.layer) continue;
+      if (!canConnect(a, b)) continue;
+      return bi;
+    }
+    return -1;
+  };
+
   for (const u of groups) {
     if (!isNodeGroup[u.id]) continue;
     const uNode = nodeIdOfGroup[u.id];
-    for (const ltIdx of u.layerTiles) {
-      const L = list[ltIdx];
-      if (!L) continue;
-      for (const d of DIRS) {
-        if (!(L.mask & d.bit)) continue;
+    // 每个方向最多建一条边。同一节点上地面层与高架层常常同时存在
+    // （立交 / 匝道落地点），如果每个层各走一遍，就会生成
+    // 「一层地面 + 一层高架」的重复边，而且那条边的等级/限速/高程
+    // 会取错层 —— 表现为隧道里的车悬空、地面隧道被当成高速。
+    // 规则：优先「同层直连」，没有才用跨层连接。
+    for (const d of DIRS) {
+      if (!(u.mask & d.bit)) continue;
+      let ltIdx = -1, fallback = -1;
+      for (const k of u.layerTiles) {
+        if (!(list[k].mask & d.bit)) continue;
+        if (fallback < 0) fallback = k;
+        if (neighborSameLayer(k, d) >= 0) { ltIdx = k; break; }
+      }
+      if (ltIdx < 0) ltIdx = fallback;
+      if (ltIdx < 0) continue;
+      {
+        const L = list[ltIdx];
+        if (!L) continue;
         const poly = [{ x: u.wx, z: u.wz, y: L.h }];
         const eTiles = [L.tile];
+        const eLayer = [L.layer];
         let curLt = neighborLayer(ltIdx, d);
         let dir = d;
         let endUnit = -1;
@@ -229,6 +313,7 @@ export function buildNetwork(tiles, roadDefs) {
           const C = list[curLt];
           poly.push({ x: worldX(C.tile % S), z: worldZ(Math.floor(C.tile / S)), y: C.h });
           eTiles.push(C.tile);
+          eLayer.push(C.layer);
           const cg = groupOf[curLt];
           if (isNodeGroup[cg]) { endUnit = nodeIdOfGroup[cg]; break; }
           // 中间段：出口是"非回头"的方向
@@ -249,30 +334,30 @@ export function buildNetwork(tiles, roadDefs) {
         // 之前用 min(road, over) 会让「高架高速跨过大道路面」的那几格
         // 把整条高架高速的等级算成大道 —— 于是限速、车道数、宽度全都不对，
         // 高架上也就永远没有车（太慢没人愿意走）。
-        const type = eTiles.reduce((mn, t) => {
-          const v = L.layer === 1 ? (tiles[t].over || 0) : (tiles[t].road || 0);
+        const type = eTiles.reduce((mn, t, k) => {
+          const v = eLayer[k] === 1 ? (tiles[t].over || 0) : (tiles[t].road || 0);
           return v ? Math.min(mn, v) : mn;
         }, 99);
         const def = roadDefs[type];
         const laneTypes = [];
         // 地面层与高架层各自维护车道类型
-        const laneSrc = L.layer === 1 ? (tiles[eTiles[0]].olt || 0) : (tiles[eTiles[0]].lt || 0);
+        const laneSrc = eLayer[0] === 1 ? (tiles[eTiles[0]].olt || 0) : (tiles[eTiles[0]].lt || 0);
         for (let l = 0; l < def.lanes; l++) {
           laneTypes.push((laneSrc >> (l * 2)) & 3);
         }
         const edge = {
           id: edges.length, nodes: [uNode, endUnit], tiles: eTiles,
-          length: polyLength(poly), type, def, layer: L.layer,
+          length: polyLength(poly), type, def, layer: L.layer, tileLayer: eLayer,
           // lanes = 道路总车道数（双向）；lanesPerDir = 单向车道数
           lanes: def.lanes, lanesPerDir: Math.max(1, Math.floor(def.lanes / 2)),
           v0: def.v0, congestion: 0,
           density: 0, avgSpeed: def.v0, flow: 0, laneTypes,
         };
         edges.push(edge);
-        const arr = L.layer === 1 ? overTileEdge : tileEdge;
-        const arrOff = L.layer === 1 ? overTileOffset : tileOffset;
         for (let k = 0; k < eTiles.length; k++) {
           const ti = eTiles[k];
+          const arr = eLayer[k] === 1 ? overTileEdge : tileEdge;
+          const arrOff = eLayer[k] === 1 ? overTileOffset : tileOffset;
           if (arr[ti] === -1) { arr[ti] = edge.id; arrOff[ti] = k * MAP.TILE; }
         }
       }
@@ -296,8 +381,11 @@ export function buildNetwork(tiles, roadDefs) {
       arc.v0 = edge.v0;
       arc.def = edge.def;
       arc.layer = edge.layer;
+      arc.axis = arc.poly.length > 1 ? dominantAxis(arc.poly) : 'z';
       // 该方向占道路的哪一侧：side = -1 表示「渲染坐标的负半侧」
       // （X 向道路的负半侧 = -Z，Z 向道路的负半侧 = -X）
+      // 注意：arc.axis 必须先算出来 —— 之前 side 用的是 undefined 的 axis，
+      // 于是所有东西向道路都按「Z 向」处理，西行车道的车道类型被镜像了。
       const p0 = arc.poly[0], p1 = arc.poly[arc.poly.length - 1];
       const ddx = p1.x - p0.x, ddz = p1.z - p0.z;
       arc.side = arc.axis === 'x' ? (ddx > 0 ? -1 : 1) : (ddz > 0 ? 1 : -1);
@@ -313,7 +401,6 @@ export function buildNetwork(tiles, roadDefs) {
       arc.laneVehicles = Array.from({ length: arc.lanes }, () => []);
       arc.vehicles = [];
       arc.congestion = 0;
-      arc.axis = arc.poly.length > 1 ? dominantAxis(arc.poly) : 'z';
       // 段首 / 段尾的行驶方向（转向判定要用，避免每帧重算几何）
       arc.startHeading = arc.poly.length > 1
         ? Math.atan2(arc.poly[1].x - arc.poly[0].x, arc.poly[1].z - arc.poly[0].z) : 0;
@@ -376,6 +463,21 @@ export function buildNetwork(tiles, roadDefs) {
       a.type = Math.max(a.type, arc.type);
     }
     node.approaches = Object.keys(acc).map((k) => acc[k]);
+    // 停止线：路口的近边（垂直方向那条路的半宽 + 余量）
+    // 车辆应该在路口外的停止线前停车，而不是压在路口里。
+    node.stopLine = {};
+    node.clearDist = 6;
+    for (const a of node.approaches) {
+      const crossAxis = a.axis === 'x' ? 'z' : 'x';
+      let hw = 0;
+      for (const b of node.approaches) {
+        if (b.axis !== crossAxis) continue;
+        hw = Math.max(hw, b.width / 2);
+      }
+      if (!hw) hw = a.width / 2;
+      node.stopLine[a.dir] = hw + 1.2;
+      node.clearDist = Math.max(node.clearDist, hw + 2.5);
+    }
     // 大型路口：至少两条「双向多车道 / 大道级」的路相交
     node.wide = node.approaches.filter((a) => a.lanes >= 2 || a.type >= 2).length >= 2;
     // 弧形右转通道（slip lane）：四岔大路口 + 路口角上没有别的路 -> 右转走外侧弧线
@@ -447,17 +549,23 @@ function maxTurnAngle(poly) {
 
 function edgePoly(edge, nodes, tiles) {
   const a = nodes[edge.nodes[0]], b = nodes[edge.nodes[1]];
-  const yOf = (ti) => (edge.layer === 1 ? (tiles[ti].h || 0) : (tiles[ti].roadH || 0));
-  const pts = [{ x: a.wx, z: a.wz, y: yOf(edge.tiles[0]) }];
+  // 每格按「它自己所在的那一层」取高程：混合边（地面 -> 匝道 -> 高架）
+  // 每一格的高度都不同，用整条边的层号会让隧道里的车悬空 7 米。
+  const layers = edge.tileLayer || [];
+  const yOf = (k) => {
+    const ti = edge.tiles[k];
+    return (layers[k] === 1) ? (tiles[ti].h || 0) : (tiles[ti].roadH || 0);
+  };
+  const pts = [{ x: a.wx, z: a.wz, y: yOf(0) }];
   for (let k = 1; k < edge.tiles.length - 1; k++) {
     const ti = edge.tiles[k];
     pts.push({
       x: worldX(ti % MAP.SIZE), z: worldZ(Math.floor(ti / MAP.SIZE)),
-      y: yOf(ti),
+      y: yOf(k),
     });
   }
   const last = edge.tiles[edge.tiles.length - 1];
-  pts.push({ x: b.wx, z: b.wz, y: yOf(last) });
+  pts.push({ x: b.wx, z: b.wz, y: yOf(edge.tiles.length - 1) });
   return pts;
 }
 

@@ -127,6 +127,7 @@
     <div class="kv"><span>无法到达</span><b id="t-unreach">0</b></div>
     <div class="kv"><span>特种车辆出动</span><b id="t-dispatch">0</b></div>
     <div class="kv"><span>在途/停靠</span><b id="t-dwell">0</b></div>
+    <div class="kv"><span>过境车辆</span><b id="t-through">0</b></div>
     <h4>信号灯方案</h4>
     <div class="seg" id="signal-modes">
       <button data-mode="0" title="北/东/南/西 四个方向分别放行，互不冲突（最安全，也最堵）">四向分相</button>
@@ -134,6 +135,12 @@
       <button data-mode="2" title="大路口四向分相，小路口对向通行">自动</button>
     </div>
     <p class="hint" id="signal-hint">右侧通行：右转走最右车道，左转走最左车道。</p>
+    <h4>选路方式</h4>
+    <div class="seg" id="routing-modes">
+      <button data-mode="static" title="车辆按限速算最快到达，固定走同一条路 —— 堵车是交通流自己跑出来的">按限速最短路</button>
+      <button data-mode="adaptive" title="车辆实时躲开已经堵死的路段（会绕远路）">动态绕行</button>
+    </div>
+    <p class="hint" id="routing-hint"></p>
     <h4>出行目的分布</h4>
     <div class="kv"><span>上班</span><b id="t-work">0</b></div>
     <div class="kv"><span>购物</span><b id="t-shop">0</b></div>

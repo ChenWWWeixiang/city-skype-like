@@ -9,7 +9,7 @@
     "start": "npm run build && node server/index.js",
     "dev": "node build.js && node --watch server/index.js",
     "serve": "node server/index.js",
-    "test": "node test/smoke.mjs && node test/flow.mjs && node test/conservation.mjs && node test/terrain.mjs && node test/lab.mjs"
+    "test": "node test/smoke.mjs && node test/flow.mjs && node test/conservation.mjs && node test/terrain.mjs && node test/lab.mjs && node test/jam.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

@@ -164,6 +164,7 @@ export class Game {
       settleMinutes: c.settleMinutes,
       // 城市设置（信号灯方案）
       signalMode: (c.settings && c.settings.signalMode) || 0,
+      routing: (c.settings && c.settings.routing) || 'static',
       // 车队（守恒：路上 + 车库 + 特种）
       fleet: {
         total: c.traffic.fleet.total, cars: c.traffic.fleet.cars,
@@ -183,6 +184,9 @@ export class Game {
         sameNode: ts.sameNode || 0, noRoute: ts.noRoute || 0, lastFail: ts.lastFail || '',
         dispatched: ts.dispatched || 0, emergency: ts.emergency || 0,
         dwelling: ts.dwelling || 0, byPurpose: ts.byPurpose || {},
+        // 过境车流（外部货车 / 长途客车）：从高速出入口进、另一个口出
+        through: ts.through || 0, throughExited: ts.throughExited || 0,
+        throughOnRoad: ts.throughOnRoad || 0,
       },
       lab: this.headerExtra ? this.headerExtra() : undefined,
       ledger: c.ledger.slice(-24),
@@ -254,6 +258,11 @@ export class Game {
       }
       case 'signal': {
         const res = c.setSignalMode(cmd.mode);
+        reply(res);
+        break;
+      }
+      case 'routing': {
+        const res = c.setRouting(cmd.mode);
         reply(res);
         break;
       }

@@ -200,6 +200,8 @@ export class Lab {
   }
 
   _stage6() {
+    // 阶段 6 专门演示「动态绕行」：把选路方式切成 adaptive
+    if (this.city) this.city.settings.routing = 'adaptive';
     const c = this.city;
     c.buildRoad(segX(8, 40, 16), 2);                 // 北线
     c.buildRoad(segX(8, 40, 32), 1);                 // 南线（窄一点，更容易堵）

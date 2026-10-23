@@ -54,6 +54,24 @@ app.get('/api/cities', (req, res) => {
   res.json(rows.map((r) => ({ ...r, live: live.has(r.id) })));
 });
 
+// 默认落地城（示范城）：外部访问不带 ?c= 时直接打开它。
+// 里面已经是一座能跑起来的小城：高架环线 + 匝道 + 穿山隧道 + 跨河大桥。
+app.get('/api/cities/featured', (req, res) => {
+  const id = repo.getFeatured();
+  if (!id) return res.json({ id: null });
+  const game = manager.get(id) || manager.loadFromDb(id);
+  if (!game) return res.json({ id: null });
+  res.json({ id, name: game.city.name, population: game.city.stats.population });
+});
+
+// 把某座城市置为默认落地城（示范城用）
+app.post('/api/cities/:id/feature', (req, res) => {
+  const game = manager.get(req.params.id) || manager.loadFromDb(req.params.id);
+  if (!game) return res.status(404).json({ error: '城市不存在' });
+  repo.setFeatured(game.city.id);
+  res.json({ ok: true, id: game.city.id });
+});
+
 app.post('/api/cities', (req, res) => {
   const name = String(req.body?.name || '新城市').slice(0, 40);
   const game = manager.create({ name, seed: req.body?.seed });

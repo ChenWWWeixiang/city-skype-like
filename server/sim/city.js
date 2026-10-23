@@ -5,7 +5,7 @@ import {
   MAP, TIME, ROADS, ZONES, ECON, SERVICES, SERVICE_BY_ID,
   BUILDING_CAPS, TRAFFIC, LAND, TERRAIN, ELEV, LANE_TYPE_LIST, DEMOGRAPHY, hash2, SIGNAL,
 } from './constants.js';
-import { buildNetwork, tileIndex } from './roadnet.js';
+import { buildNetwork, tileIndex, pathDirMasks } from './roadnet.js';
 import { TrafficSim } from './traffic.js';
 import { development } from './develop.js';
 import { EventSystem } from './events.js';
@@ -44,6 +44,9 @@ export class City {
     this.name = opts.name || '新城市';
     this.seed = opts.seed ?? MAP.WATER_SEED;
     this.flat = !!opts.flat;      // 平地（无起伏）：测试与「平原城市」用
+    // 自定义山体（示范城用）：[{x,z,r,h}] —— 指定了就不用随机山峰，
+    // 这样「隧道正好从山中间穿过去」是可复现的（不会随机跑到平地上）。
+    this.customPeaks = Array.isArray(opts.peaks) ? opts.peaks.map((p) => ({ ...p })) : null;
     this.tick = 0;                       // 游戏分钟
     this.funds = opts.funds ?? ECON.START_FUNDS;
     this.tax = { ...ECON.DEFAULT_TAX };
@@ -89,7 +92,7 @@ export class City {
     // 财政结算步长（游戏分钟）：每 N 分钟把累计收支写进流水一次
     this.settleMinutes = ECON.SETTLE_MINUTES;
     // 城市设置（信号灯方案等）
-    this.settings = { signalMode: SIGNAL.MODE.AUTO };
+    this.settings = { signalMode: SIGNAL.MODE.AUTO, routing: 'static' };
     this._settleAcc = 0;
     this._genTerrain();
     this._initTiles();
@@ -161,7 +164,7 @@ export class City {
       }
     }
     // 2) 山脉：坡度超过 22% —— 修不了路，必须绕山而行（或挖隧道穿过去）
-    for (const p of (this.flat ? [] : this._genPeaks())) {
+    for (const p of (this.flat ? [] : (this.customPeaks || this._genPeaks()))) {
       const x0 = Math.max(0, Math.floor(p.x - p.r)), x1 = Math.min(S - 1, Math.ceil(p.x + p.r));
       const z0 = Math.max(0, Math.floor(p.z - p.r)), z1 = Math.min(S - 1, Math.ceil(p.z + p.r));
       for (let z = z0; z <= z1; z++) {
@@ -270,6 +273,9 @@ export class City {
         tunnel: 0,     // 1 = 隧道（路面在地面以下）
         lt: 0,         // 车道类型打包（每车道 2 bit）
         olt: 0,        // 高架层车道类型打包
+        rd: 0,         // 地面道路走向位掩码（8 方向）：路网按它连通
+        od: 0,         // 高架道路走向位掩码
+        hcap: 0,      // 高度上限（0 = 不限）：限制这块地最高能盖到几级
       };
     }
   }
@@ -320,6 +326,18 @@ export class City {
       valid.push(i);
     }
     if (!valid.length) return { ok: false, msg: '没有可施工的地块' };
+    // 记录「这条路实际往哪走」—— 路网按它连通。
+    // 之前靠「看邻居有没有路」推断，斜向道路旁边会凭空多出斜向捷径，
+    // 在街区中间造出一个假的路口（多一个红绿灯 = 多一处堵点）。
+    const dirMasks = pathDirMasks(tileList.filter((i) => i >= 0 && i < this.tiles.length));
+    const dirKey = elevated ? 'od' : 'rd';
+    const applyDirs = () => {
+      for (const [i, m] of dirMasks) {
+        const t = this.tiles[i];
+        if (!t) continue;
+        t[dirKey] = (t[dirKey] | 0) | m;
+      }
+    };
     // --- 坡度 / 桥 / 隧道 判定（自然规律：太陡修不了路，跨水自动成桥）---
     let plan = null;
     if (!elevated) {
@@ -332,6 +350,15 @@ export class City {
     if (elevated) {
       // 高架道路：两端设坡道，中部抬升形成立体交叉（地面道路保持在下层）
       const n = valid.length;
+      // 桥面高度：
+      //   opts.height 显式指定（高架环线必须整圈等高，否则接缝会断开）
+      //   否则取该段最高地面 + 标准桥高
+      let deckH = opts.height;
+      if (deckH === undefined) {
+        let maxG = -Infinity;
+        for (const i of valid) maxG = Math.max(maxG, this.elevAt(i));
+        deckH = maxG + ELEV.BRIDGE_HEIGHT;
+      }
       // 匝道（ramp）：一端贴地面（接地面路），另一端爬到高架高度（接高架）
       // —— 没有匝道，高架高速就是个「两头堵死的空中楼阁」，谁也上不去
       if (opts.ramp && n >= 2) {
@@ -341,7 +368,9 @@ export class City {
         const hStart = (this.tiles[startTile].road && this.tiles[startTile].roadH !== undefined)
           ? this.tiles[startTile].roadH : this.elevAt(startTile);
         const endT = this.tiles[endTile];
-        const hEnd = endT.over ? (endT.h || 0) : (hStart + ELEV.BRIDGE_HEIGHT);
+        // 匝道顶端必须与高架板严丝合缝：优先用已建成的高架板高度
+        const hEnd = opts.height !== undefined ? opts.height
+          : (endT.over ? (endT.h || 0) : (hStart + ELEV.BRIDGE_HEIGHT));
         const rise = Math.abs(hEnd - hStart);
         if (rise > ELEV.MAX_RAMP * (n - 1) + 0.01) {
           return { ok: false, msg: '匝道太短，坡度超过 ' + Math.round(ELEV.MAX_RAMP / MAP.TILE * 100) + '%（请修长一点）' };
@@ -356,9 +385,32 @@ export class City {
           t.olt = 0;
           this.markDirty(i);
         }
+        applyDirs();
         this.rebuildNetwork();
         this.refreshAggregates();
         return { ok: true, msg: '已架设高架匝道（-' + Math.round(cost) + ' §）', cost };
+      }
+      // 纯高架板（deck）：整段等高，两端的坡道由独立的匝道负责
+      // —— 这是「高架环线」的做法：环线一圈都是平的，靠 4 条匝道上下。
+      if (opts.deck) {
+        for (let k = 0; k < n; k++) {
+          const i = valid[k];
+          const t = this.tiles[i];
+          if (!t.road) { t.zone = 0; t.level = 0; t.service = 0; }
+          t.over = roadType;
+          t.h = deckH;
+          t.olt = 0;
+          this.markDirty(i);
+        }
+        applyDirs();
+        this.rebuildNetwork();
+        this.refreshAggregates();
+        return {
+          ok: true,
+          msg: '已架设高架板（-' + Math.round(cost) + ' §，桥面高 ' + deckH.toFixed(1) + ' m）' +
+            '　提示：两端需要匝道接上地面道路才能通车',
+          cost,
+        };
       }
       const profile = heightProfile(n, ELEV.BRIDGE_HEIGHT, ELEV.RAMP_TILES);
       // 桥面本身要平（两端等高、中间一段平台），这样跨过地面路才像真正的立交
@@ -378,6 +430,7 @@ export class City {
         t.olt = 0;
         this.markDirty(i);
       }
+      applyDirs();
       this.rebuildNetwork();
       this.refreshAggregates();
       const ends = [this.tiles[valid[0]], this.tiles[valid[valid.length - 1]]];
@@ -404,6 +457,7 @@ export class City {
       t.tunnel = opts.tunnel ? 1 : 0;
       this.markDirty(i);
     }
+    applyDirs();
     this.rebuildNetwork();
     this.refreshAggregates();
     return {
@@ -721,6 +775,7 @@ export class City {
         if (t.road) refund += ROAD_BY_ID[t.road].cost * ECON.BULLDOZE_REFUND;
         if (t.over) refund += ROAD_BY_ID[t.over].cost * ECON.BULLDOZE_REFUND;
         t.road = 0; t.over = 0; t.h = 0; t.level = 0; t.zone = 0; t.pop = 0; t.jobs = 0;
+        t.rd = 0; t.od = 0; t.lt = 0; t.olt = 0; t.roadH = 0; t.bridge = 0; t.tunnel = 0;
         n++;
       } else if (t.service) {
         refund += SERVICE_BY_ID[t.service].cost * ECON.BULLDOZE_REFUND;
@@ -873,6 +928,18 @@ export class City {
         '住宅/商业/工业 + 发电厂/水塔/诊所 + 高速出入口　人口 ' + Math.round(this.stats.population) +
         '，路上已经有车了（速度已设为 2×）',
       cost,
+    };
+  }
+
+  /** 切换选路方式：static = 按限速最短路（最快到达）/ adaptive = 动态绕开拥堵 */
+  setRouting(mode) {
+    const m = mode === 'adaptive' ? 'adaptive' : 'static';
+    this.settings.routing = m;
+    return {
+      ok: true,
+      msg: m === 'adaptive'
+        ? '选路方式：动态绕行（车辆会主动躲开已经堵死的路段）'
+        : '选路方式：按限速最短路（车辆按限速算最快到达，堵车由交通流自己跑出来）',
     };
   }
 
@@ -1155,8 +1222,12 @@ export class City {
       const jobs = this.stats.jobs || 0;
       // 岗位/人口比：没有工作就没有人愿意来（避免城市空转、盲目膨胀）
       const jobPerCap = dem.pop > 0 ? jobs / dem.pop : 1;
+      // 岗位/人口比：没有工作就没有人愿意来。
+      // 曲线必须够陡 —— 以前 0.5 以上都是满速，结果人口可以无限膨胀、
+      // 失业率飙到 39%（城市看着热闹，其实全是失业人口）。
+      // 现在低于 0.62 基本没人来，高于 0.85 才是满速。
       const jobFactor = Math.max(0, Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
-        ((jobPerCap - 0.15) / 0.35) * DEMOGRAPHY.IMMIGRATION_JOB_FACTOR));
+        ((jobPerCap - 0.62) / 0.23) * DEMOGRAPHY.IMMIGRATION_JOB_FACTOR));
       // 幸福度低的城市没人愿意来（堵车、缺服务 -> 人口流失）
       const happyNow = this.stats.happiness === undefined ? 70 : this.stats.happiness;
       const happyFactor = Math.max(0, Math.min(1, (happyNow - 20) / 45));
@@ -1178,8 +1249,12 @@ export class City {
     // --- 迁出：幸福度低 -> 有人开车离开城市 ---
     const happy = this.stats.happiness === undefined ? 70 : this.stats.happiness;
     const unhappy = Math.max(0, (70 - happy) / 70);
+    // 路堵死的时候人根本开不走：迁出速率要跟着通行能力一起下降。
+    // 没有这一项会形成死亡螺旋（越堵 -> 越不幸福 -> 越想走 -> 路上车越多 -> 越堵）。
+    const cong = Math.min(1, (this.traffic.stats.congestion || 0) / 60);
+    const roadFactor = Math.max(0.08, 1 - cong * 0.92);
     const emRate = dem.pop * DEMOGRAPHY.EMIGRATION_RATE_PER_HOUR *
-      (1 + unhappy * DEMOGRAPHY.EMIGRATION_UNHAPPY_FACTOR);
+      (1 + unhappy * DEMOGRAPHY.EMIGRATION_UNHAPPY_FACTOR) * roadFactor;
     dem._emigAcc = (dem._emigAcc || 0) + emRate * hours;
     while (dem._emigAcc >= 1) {
       dem._emigAcc -= 1;
@@ -1213,7 +1288,7 @@ export class City {
     const jobs = this.stats.jobs || 0;
     const jobPerCap = pop > 0 ? jobs / pop : 1;
     const jobFactor = Math.max(0, Math.min(DEMOGRAPHY.IMMIGRATION_JOB_FACTOR,
-      ((jobPerCap - 0.15) / 0.35) * DEMOGRAPHY.IMMIGRATION_JOB_FACTOR));
+      ((jobPerCap - 0.62) / 0.23) * DEMOGRAPHY.IMMIGRATION_JOB_FACTOR));
     const happyFactor = Math.max(0, Math.min(1, (happy - 20) / 45));
     const rate = Math.min(DEMOGRAPHY.IMMIGRATION_MAX_PER_HOUR,
       DEMOGRAPHY.IMMIGRATION_BASE_PER_HOUR * jobFactor * happyFactor);
@@ -1272,7 +1347,10 @@ export class City {
       id: this.id, name: this.name, seed: this.seed,
       tick: this.tick, funds: this.funds, tax: this.tax, speed: this.speed,
       settleMinutes: this.settleMinutes,
-      settings: { signalMode: (this.settings && this.settings.signalMode) || SIGNAL.MODE.AUTO },
+      settings: {
+        signalMode: (this.settings && this.settings.signalMode) || SIGNAL.MODE.AUTO,
+        routing: (this.settings && this.settings.routing) || 'static',
+      },
       trafficT: Math.round(this.traffic.t || 0),
       entrances: (this.entrances || []).slice(),
       terrain: Array.from(this.terrain),
@@ -1291,6 +1369,8 @@ export class City {
         Math.round((t.h || 0) * 10) / 10, t.lt || 0, t.over || 0, t.olt || 0,
         Math.round((t.occ === undefined ? (t.level ? 1 : 0) : t.occ) * 255),
         Math.round((t.roadH || 0) * 10) / 10, t.bridge || 0, t.tunnel || 0,
+        t.rd || 0, t.od || 0,
+        t.hcap || 0,
       ]),
       ledger: this.ledger.slice(-240),
       createdAt: this.createdAt,
@@ -1305,8 +1385,11 @@ export class City {
     }
     city.tick = data.tick | 0;
     city.settleMinutes = data.settleMinutes || ECON.SETTLE_MINUTES;
-    city.settings = { signalMode: (data.settings && data.settings.signalMode !== undefined)
-      ? data.settings.signalMode : SIGNAL.MODE.AUTO };
+    city.settings = {
+      signalMode: (data.settings && data.settings.signalMode !== undefined)
+        ? data.settings.signalMode : SIGNAL.MODE.AUTO,
+      routing: (data.settings && data.settings.routing) || 'static',
+    };
     let oldFormat = false;
     city.tiles.forEach((t, i) => {
       const a = data.tiles[i] || [0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0];
@@ -1326,6 +1409,11 @@ export class City {
         t.bridge = t.road && t.terrain === TERRAIN.water ? 1 : 0;
         t.tunnel = 0;
       }
+      // 道路走向位掩码（第 16、17 项）：老存档没有 -> 退回邻居推断
+      t.rd = a.length > 15 ? (a[15] | 0) : 0;
+      t.od = a.length > 16 ? (a[16] | 0) : 0;
+      // 高度上限（第 19 项）：老存档没有 -> 不限高
+      t.hcap = a.length > 18 ? (a[18] | 0) : 0;
     });
     if (oldFormat) city._relaxRoadHeights();
     city.ledger = data.ledger || [];

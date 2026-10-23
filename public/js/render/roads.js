@@ -127,6 +127,7 @@ export class RoadRenderer {
       // 路基（路缘）：把路面和地形的接缝盖住，看起来像有路肩
       const matCurb = new THREE.MeshStandardMaterial({
         color: 0x6b6f74, vertexColors: true, roughness: 0.98, metalness: 0,
+        side: THREE.DoubleSide,
       });
       const mesh = new THREE.Mesh(new THREE.BufferGeometry(), [matPlain, matMarked, matDiag, matCurb]);
       mesh.receiveShadow = true;
@@ -218,6 +219,37 @@ export class RoadRenderer {
         idxCurb.push(n, n + 2, n + 1, n, n + 3, n + 2);
         vbase += 4;
       };
+      // 高架桥的防撞墙（护栏）：让高架一眼就能认出来
+      // 做成实体墙（外面 + 内面 + 顶盖），两侧都能看见。
+      const pushParapet = (x0, z0, x1, z1, yTop, cx, cz) => {
+        const WALL_H = 1.05;      // 护栏高
+        const WALL_T = 0.3;       // 护栏厚
+        const dx = x1 - x0, dz = z1 - z0;
+        const L = Math.hypot(dx, dz) || 1;
+        const ux = dx / L, uz = dz / L;
+        // 垂直于边的法线，指向路面中心（即“内”侧）
+        let nx = -uz, nz = ux;
+        const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+        if ((mx - cx) * nx + (mz - cz) * nz < 0) { nx = -nx; nz = -nz; }
+        const yb = yTop, yt = yTop + WALL_H;
+        const ox = -nx * WALL_T, oz = -nz * WALL_T;   // 外侧偏移
+        const ix = nx * WALL_T, iz = nz * WALL_T;     // 内侧偏移
+        const wall = (ax, az, bx, bz) => {
+          const n = vbase;
+          pos.push(ax, yb, az, bx, yb, bz, bx, yt, bz, ax, yt, az);
+          for (let k = 0; k < 4; k++) { nor.push(0, 1, 0); col.push(1.45, 1.45, 1.45); uv.push(0, 0); }
+          idxCurb.push(n, n + 2, n + 1, n, n + 3, n + 2);
+          vbase += 4;
+        };
+        wall(x0 + ox, z0 + oz, x1 + ox, z1 + oz);   // 外侧
+        wall(x1 + ix, z1 + iz, x0 + ix, z0 + iz);   // 内侧
+        // 顶盖
+        const n = vbase;
+        pos.push(x0 + ox, yt, z0 + oz, x1 + ox, yt, z1 + oz, x1 + ix, yt, z1 + iz, x0 + ix, yt, z0 + iz);
+        for (let k = 0; k < 4; k++) { nor.push(0, 1, 0); col.push(1.6, 1.6, 1.6); uv.push(0, 0); }
+        idxCurb.push(n, n + 2, n + 1, n, n + 3, n + 2);
+        vbase += 4;
+      };
 
       // y0/y1: 沿道路方向两端的实际高程（用于坡道平滑）
       // 路面贴图：u = 横向（垂直于道路），v = 沿路方向。
@@ -301,6 +333,12 @@ export class RoadRenderer {
           if (!(m & 16)) pushCurb(wx - hw, wz + hw, wx + hw, wz + hw, y - 0.04);
           if (!(m & 64)) pushCurb(wx - hw, wz - hw, wx - hw, wz + hw, y - 0.04);
           if (!(m & 4)) pushCurb(wx + hw, wz - hw, wx + hw, wz + hw, y - 0.04);
+        } else {
+          // 高架：沿桥面边缘立护栏（没有连接的方向）
+          if (!(m & 1)) pushParapet(wx - hw, wz - hw, wx + hw, wz - hw, y, wx, wz);
+          if (!(m & 16)) pushParapet(wx - hw, wz + hw, wx + hw, wz + hw, y, wx, wz);
+          if (!(m & 64)) pushParapet(wx - hw, wz - hw, wx - hw, wz + hw, y, wx, wz);
+          if (!(m & 4)) pushParapet(wx + hw, wz - hw, wx + hw, wz + hw, y, wx, wz);
         }
         for (const d of D8) {
           if (!(m & d.bit)) continue;

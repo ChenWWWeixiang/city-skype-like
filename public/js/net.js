@@ -33,6 +33,7 @@ export const state = {
   vehicles: new Float32Array(0),
   settleMinutes: 10,
   signalMode: 2,        // 信号灯方案：0 四向分相 / 1 对向通行 / 2 自动
+  routing: 'static',     // 选路方式：static 按限速最短路 / adaptive 动态绕行
   // 变更回调
   changedTiles: new Set(),
   congestionDirty: true,
@@ -215,6 +216,7 @@ export class Net {
     state.lab = h.lab || null;
     if (h.settleMinutes) state.settleMinutes = h.settleMinutes;
     if (h.signalMode !== undefined) state.signalMode = h.signalMode;
+    if (h.routing !== undefined) state.routing = h.routing;
     if (h.demography) state.demography = h.demography;
     if (h.fleet) state.fleet = h.fleet;
     if (h.events) state.events = h.events;

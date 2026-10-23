@@ -61,6 +61,15 @@ CREATE INDEX IF NOT EXISTS idx_ledger_city ON ledger(city_id, id);
 CREATE INDEX IF NOT EXISTS idx_saves_city ON saves(city_id, id);
 `);
 
+// --- 迁移：featured（置顶示范城）---------------------------------------
+// 外部访问不带 ?c= 参数时默认打开这座示范城（高架环线 + 穿山隧道 + 跨河大桥）。
+try {
+  const cols = db.prepare('PRAGMA table_info(cities)').all();
+  if (!cols.some((c) => c.name === 'featured')) {
+    db.exec('ALTER TABLE cities ADD COLUMN featured INTEGER NOT NULL DEFAULT 0');
+  }
+} catch { /* 迁移失败不影响主流程 */ }
+
 const q = {
   upsertCity: db.prepare(`
     INSERT INTO cities (id,name,seed,tick,funds,population,is_public,created_at,updated_at,snapshot)
@@ -70,8 +79,10 @@ const q = {
       population=excluded.population, updated_at=excluded.updated_at, snapshot=excluded.snapshot`),
   getCity: db.prepare('SELECT * FROM cities WHERE id = ?'),
   listCities: db.prepare(`
-    SELECT id,name,seed,tick,funds,population,is_public,created_at,updated_at
-    FROM cities ORDER BY updated_at DESC`),
+    SELECT id,name,seed,tick,funds,population,is_public,featured,created_at,updated_at
+    FROM cities ORDER BY featured DESC, updated_at DESC`),
+  getFeatured: db.prepare('SELECT id FROM cities WHERE featured = 1 ORDER BY updated_at DESC LIMIT 1'),
+  setFeatured: db.prepare('UPDATE cities SET featured = CASE WHEN id = ? THEN 1 ELSE 0 END'),
   deleteCity: db.prepare('DELETE FROM cities WHERE id = ?'),
   insertSave: db.prepare(`
     INSERT INTO saves (city_id,label,created_at,snapshot) VALUES (?,?,?,?)`),
@@ -111,6 +122,8 @@ export const repo = {
     return { row, snapshot: decompress(row.snapshot) };
   },
   listCities() { return q.listCities.all(); },
+  getFeatured() { return q.getFeatured.get()?.id || null; },
+  setFeatured(id) { q.setFeatured.run(id); },
   deleteCity(id) { q.deleteCity.run(id); },
   saveSnapshot(cityId, label, snapshotBuf) {
     const r = q.insertSave.run(cityId, label || null, Date.now(), snapshotBuf);

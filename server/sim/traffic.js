@@ -106,11 +106,11 @@ export class TrafficSim {
       arc.vehicles.push(veh);
     }
     this._recomputeTileAccess();
-    // 路网通行能力（辆/交通秒）：约每 25km 单向车道可承载 1 辆/秒的稳态流量
+    // 路网通行能力（辆/交通秒）：约每 16km 单向车道可承载 1 辆/秒的稳态流量
     let laneM = 0;
     for (const a of net.arcs) laneM += a.length * a.lanes;
-    // 实际可用能力取理论值的 75%：接近满负荷时排队会无限增长（死亡螺旋）
-    this.capacityRate = laneM / 25000 * 0.75;
+    // 实际可用能力取理论值的 85%：接近满负荷时排队会无限增长（死亡螺旋）
+    this.capacityRate = laneM / 9000 * 0.9;
     // 信号相位表（随路网 / 方案变化重建）
     this.rebuildSignalPlans();
     this.computeParkedCars();
@@ -170,6 +170,21 @@ export class TrafficSim {
     this.tripRate = rate;
     this.pendingTrips += rate * TRAFFIC.SEC_PER_HOUR;
     this.stats.totalTrips = (this.stats.totalTrips || 0) + rate * TRAFFIC.SEC_PER_HOUR;
+
+    // 过境车流：入口 <-> 入口的长途车。城市越大、对外连接越多，过境车越多。
+    // 白天多、夜里少（和真实的高速流量曲线一致）。
+    const gates = (city.entrances || []).length;
+    if (gates >= 2) {
+      const pairs = (gates * (gates - 1)) / 2;
+      const base = TRAFFIC.THROUGH_PER_HOUR_BASE * pairs
+        + TRAFFIC.THROUGH_PER_HOUR_POP * (city.stats.population || 0);
+      // 夜间基本没有过境车，白天按需求曲线走
+      const night = (hour >= 22 || hour < 5) ? 0.10 : (hour < 7 ? 0.55 : 1.0);
+      // rate 的单位是「辆 / 交通秒」（和 tripRate 一致）
+      this.throughRate = base * night / TRAFFIC.SEC_PER_HOUR;
+    } else {
+      this.throughRate = 0;
+    }
   }
 
   /**
@@ -267,7 +282,11 @@ export class TrafficSim {
       const node = nodes[cur.n];
       for (const arcId of node.arcs) {
         const arc = net.arcs[arcId];
-        const v0 = arc.v0 * (1 - 0.75 * arc.congestion);
+        // 路径代价 = 路段长度 / 限速 = 「按限速最快到达」的时间。
+        // 默认不看当前拥堵：司机按路牌/限速选路，堵车是「跑出来」的，不是「躲出来」的。
+        // （城市设置里可以切成「动态绕行」，让车辆主动躲开已经堵死的路）
+        const adaptive = this.city && this.city.settings && this.city.settings.routing === 'adaptive';
+        const v0 = arc.v0 * (adaptive ? (1 - 0.75 * arc.congestion) : 1);
         const travel = arc.length / Math.max(2.5, v0);
         const nd = dist[cur.n] + travel;
         if (visited[arc.to] === stamp && dist[arc.to] <= nd) continue;
@@ -687,6 +706,9 @@ export class TrafficSim {
     const city = this.city;
     const entrances = city.entrances || [];
     if (!entrances.length) return 0;
+    // 路上车已经到上限 -> 不再往外派车。
+    // 没有这道闸门会形成死亡螺旋：堵车 -> 幸福度掉 -> 迁出变多 -> 路更堵。
+    if (this.vehicles.length >= TRAFFIC.MAX_VEHICLES) { this.stats.dropped++; return 0; }
     const home = this._pickGarageTile('car');
     if (home === undefined) return 0;
     const gate = entrances[(Math.random() * entrances.length) | 0];
@@ -721,6 +743,111 @@ export class TrafficSim {
     this._takeFromGarage(home, 'car');
     this.stats.spawned = (this.stats.spawned || 0) + 1;
     return 1;     // 返回 1 = 安排了一辆车去离城（真正的人口扣减在它抵达出入口时）
+  }
+
+  /**
+   * 清障：把「长时间一动不动」的车拖走。
+   * 判据：车开着（没停靠）且速度几乎为 0，累计等待超过阈值（默认 150 交通秒 ≈ 2.7 游戏小时）。
+   * 这种车在现实里就是抛锚/追尾后的故障车，占着车道不放，越堵越多。
+   * 拖走之后车回自家车库，车队规模不变（守恒），只是不再占道。
+   */
+  _towStuck() {
+    const LIMIT = TRAFFIC.TOW_WAIT_SECONDS;
+    let towed = 0;
+    for (let i = this.vehicles.length - 1; i >= 0 && towed < 12; i--) {
+      const veh = this.vehicles[i];
+      if (veh.parked || veh.dwell > 0) continue;
+      if (veh.v > 0.6) continue;
+      if (veh.wait < LIMIT) continue;
+      // 路口节点容量也会被占着，拖走时要释放
+      if (veh.nodeRelease) { veh.nodeRelease.passing--; veh.nodeRelease = null; }
+      const arc = this.net.arcs[veh.arc];
+      if (arc) this._removeFromArc(veh, arc);
+      this.vehicles.splice(i, 1);
+      this.stats.towed = (this.stats.towed || 0) + 1;
+      towed++;
+      if (veh.through) continue;                       // 过境车：直接驶离城市
+      if (veh.serviceTile !== undefined) { veh.onDuty = false; continue; }   // 特种车回站待命
+      if (veh.homeTile !== undefined && veh.homeTile >= 0) {
+        this._returnToGarage(veh, veh.homeTile, veh.type === 'truck' ? 'truck' : 'car');
+      }
+    }
+  }
+
+  /**
+   * 过境车（外部货车 / 长途客车）：
+   *   从一个高速出入口开进来，按「限速最快到达」的原则穿过城市，
+   *   最后从另一个高速出入口驶离。
+   *
+   *  · 不占用本市车库、不属于本市车队、也不改变人口 —— 它只是「路过的车」；
+   *  · 但它会真实地占用道路资源：过境车多 = 高速堵 = 本地车更慢；
+   *  · 因为高速限速高，最快路径自然会走高架环线 / 快速路，
+   *    所以「交通枢纽」和「高架」才会有车可跑。
+   */
+  spawnThroughTraffic() {
+    const city = this.city;
+    const entrances = city.entrances || [];
+    if (entrances.length < 2) return false;
+    if (this.vehicles.length >= TRAFFIC.MAX_VEHICLES) { this.stats.dropped++; return false; }
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const ia = (Math.random() * entrances.length) | 0;
+      let ib = (Math.random() * (entrances.length - 1)) | 0;
+      if (ib >= ia) ib++;
+      const gateA = entrances[ia], gateB = entrances[ib];
+      const entryA = this._entranceArc(gateA);
+      const entryB = this._entranceArc(gateB);
+      if (!entryA || !entryB) continue;
+      // 出口方向：与「驶入方向」相反的那条弧
+      const edgeB = this.net.edges[this.net.arcs[entryB.arc].edge];
+      const exitArcB = (entryB.arc === edgeB.forwardArc) ? edgeB.backwardArc : edgeB.forwardArc;
+      if (exitArcB < 0) continue;
+      const typeName = TRAFFIC.THROUGH_TYPES[(Math.random() * TRAFFIC.THROUGH_TYPES.length) | 0];
+      const type = this._vehDef(typeName);
+      const veh = {
+        id: VEHICLE_SEQ++, type: typeName, typeId: type.id, len: type.len, width: type.width,
+        arc: entryA.arc, lane: 0, dist: entryA.dist, v: 0,
+        path: [], pathIdx: 0,
+        stops: [{ tile: gateB, purpose: 'exit', dwell: 0, arc: exitArcB }],
+        stop: null, dwell: 0, parked: false,
+        purpose: '', destOffset: undefined,
+        originTile: gateA, destTile: gateB,
+        born: 0, wait: 0, tripTime: 0,
+        x: 0, z: 0, y: 0, heading: 0, grade: 0,
+        state: 'driving', external: true, through: true,
+      };
+      veh.stop = veh.stops[0];
+      // 显式拼路径：进城 -> 按限速最快穿城 -> 走上出口弧驶离城市。
+      // 出口弧必须在最后，车才会是「开出城市」而不是半路凭空消失。
+      const fromNode = this.net.arcs[entryA.arc].to;
+      const exitNode = this.net.arcs[exitArcB].from;
+      let mid = [];
+      if (fromNode !== exitNode) {
+        mid = this.findPath(fromNode, exitNode);
+        if (!mid || !mid.length) { this.stats.noRoute = (this.stats.noRoute || 0) + 1; continue; }
+      }
+      veh.path = [entryA.arc, ...mid, exitArcB];
+      veh.pathIdx = 0;
+      veh.purpose = 'exit';
+      veh.destTile = gateB;
+      const exitArc = this.net.arcs[exitArcB];
+      const offB = this._roadOffsetOnArc(exitArcB, gateB);
+      veh.destOffset = Math.max(0, Math.min(exitArc.length, offB));
+      // 必须真的有一段「进城 -> 穿城」的路程，否则换一对出入口
+      if (veh.path.length < 2) continue;
+      const arc = this.net.arcs[veh.arc];
+      const place = this._placeInArcNear(arc, veh, typeName, entryA.dist);
+      if (!place) { this.stats.noSpace = (this.stats.noSpace || 0) + 1; continue; }
+      veh.lane = place.lane;
+      veh.dist = place.dist;
+      veh.v = type.speedFactor * arc.v0 * 0.6;
+      arc.laneVehicles[veh.lane].push(veh);
+      arc.vehicles.push(veh);
+      this.vehicles.push(veh);
+      this.stats.spawned = (this.stats.spawned || 0) + 1;
+      this.stats.through = (this.stats.through || 0) + 1;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -870,6 +997,14 @@ export class TrafficSim {
     const i = this.vehicles.indexOf(veh);
     if (i >= 0) this.vehicles.splice(i, 1);
     this.stats.arrived++;
+    // 记录行程耗时（自由流时间对比实际时间 -> 出行时间指数）
+    this._tripSamples.push(veh.tripTime || 0);
+    if (this._tripSamples.length > 200) this._tripSamples.shift();
+    if (veh.through) {
+      // 过境车驶出城市：它本来就不属于本市车队，也不带走任何市民
+      this.stats.throughExited = (this.stats.throughExited || 0) + 1;
+      return;
+    }
     if (veh.purpose === 'exit' || veh.emigrating) {
       // 驶出城市：车与车上的人一起离开
       this.fleet.cars--; this.fleet.total--;
@@ -1268,20 +1403,31 @@ export class TrafficSim {
           if (nextId !== undefined && nextId >= 0 && this.net.arcs[nextId]) {
             turn = this._turnType(arc, this.net.arcs[nextId]);
           }
-          list.push(turn);
+          list.push({ turn, d });
         }
       }
       near[a.dir] = list;
     }
     const conf = {};
     for (const a of node.approaches) {
-      let on = false, cross = false;
-      for (const t of near[OPP[a.dir]] || []) if (t !== 'L') { on = true; break; }
-      for (const c of CROSS[a.dir]) {
-        for (const t of near[c] || []) if (t !== 'L') { cross = true; break; }
-        if (cross) break;
+      // 让行判定改成「间隙」而不是「有没有车」：
+      // 以前只要对向 30m 内有一辆在动的车，左转车就一直等 ——
+      // 车流连续时左转永远等不到空档，左转车道堵死、整条路都堵。
+      // 现在按距离判断：对向车离得够远就可以转（真实路口就是这样抢空档）。
+      let onDist = Infinity, crossDist = Infinity;
+      for (const t of near[OPP[a.dir]] || []) {
+        if (t.turn !== 'L' && t.d < onDist) onDist = t.d;
       }
-      conf[a.dir] = { on: on, cross: cross };
+      for (const c of CROSS[a.dir]) {
+        for (const t of near[c] || []) {
+          if (t.turn !== 'L' && t.d < crossDist) crossDist = t.d;
+        }
+      }
+      conf[a.dir] = {
+        on: onDist < SIGNAL.PERMISSIVE_GAP,
+        cross: crossDist < SIGNAL.PERMISSIVE_GAP * 0.75,
+        onDist, crossDist,
+      };
     }
     node.conflict = conf;
   }
@@ -1296,6 +1442,13 @@ export class TrafficSim {
     while (dh < -Math.PI) dh += Math.PI * 2;
     if (Math.abs(dh) < TRAFFIC.TURN_ANGLE) return 'S';
     return dh > 0 ? 'L' : 'R';
+  }
+
+  /** 某进口方向的停止线距离（距路口中心多少米） */
+  _stopLine(node, arc) {
+    if (!node || !node.stopLine) return TRAFFIC.STOP_LINE;
+    const dir = this._approachOf(node, arc);
+    return node.stopLine[dir] || TRAFFIC.STOP_LINE;
   }
 
   /** 车辆在 node 的「进口方向」（从哪个方向开进来） */
@@ -1347,14 +1500,37 @@ export class TrafficSim {
     }
     this._updateSignals(dt);
     this._dispatchServices(dt);
+    // 清障车：车堵死太久（一直不动）会被拖走 —— 真实城市里路口事故车
+    // 就是这么被拖走的。没有这道机制，城市会进入「越堵越想走、越想走越堵」
+    // 的死亡螺旋，最后整城卡死。
+    this._towTimer = (this._towTimer || 0) + dt;
+    if (this._towTimer >= 8) { this._towTimer = 0; this._towStuck(); }
+    // --- 需求自适应 ---------------------------------------------------
+    // 路网越堵，市民越不愿出门（真实城市就是这样：堵了就改骑车/坐地铁）。
+    // 更重要的是它能打断「死亡螺旋」：车越多 -> 越堵 -> 车越多 -> 全城死锁。
+    // 拥堵率 0% 时需求 100%，拥堵率 55% 以上时降到 15%（只保留必要出行）。
+    const cong = Math.min(1, (this.stats.congestion || 0) / 55);
+    this.demandScale = Math.max(0.15, 1 - cong * 0.85);
     // 逐步投放车辆：按小时出行需求均匀释放（每游戏秒约 tripRate 辆）
-    this.tripBudget = (this.tripBudget || 0) + (this.tripRate || 0) * dt;
+    this.tripBudget = (this.tripBudget || 0) + (this.tripRate || 0) * dt * this.demandScale;
     const budget = Math.min(6, Math.floor(this.tripBudget));
     if (budget > 0) {
       this.tripBudget -= budget;
       this.pendingTrips -= budget;
       for (let k = 0; k < budget; k++) {
         if (!this.spawnVehicle()) break;
+      }
+    }
+
+    // --- 过境车流（外部货车 / 长途客车）---
+    // 它们从高速出入口进来、绕城或走高架、最后从另一个出入口驶离。
+    // 不占用本市车库、不改变人口 —— 纯粹是「城市的交通枢纽流量」。
+    this.throughBudget = (this.throughBudget || 0) + (this.throughRate || 0) * dt;
+    const tbudget = Math.floor(this.throughBudget);
+    if (tbudget > 0) {
+      this.throughBudget -= tbudget;
+      for (let k = 0; k < tbudget; k++) {
+        if (!this.spawnThroughTraffic()) break;
       }
     }
 
@@ -1445,7 +1621,11 @@ export class TrafficSim {
           }
           canEnter = laneOk;
         }
-        if (!canEnter) stopDist = arc.length - veh.dist - 4;
+        // 停在停止线前（路口外），而不是压在路口里
+        if (!canEnter) {
+          const sl = this._stopLine(node, arc);
+          stopDist = Math.max(0, arc.length - veh.dist - sl);
+        }
       }
 
       // --- 事故占道：后车必须停在事故现场前 -> 真实的排队回溯 ---
@@ -1601,8 +1781,9 @@ export class TrafficSim {
       if (dead) continue;
       // 释放交叉口通行权：车辆驶离路口即释放（否则在下游红灯前停车会永久占位造成死锁）
       if (veh.nodeRelease) {
-        // 驶离路口区域即释放；长时间停滞则强制释放以避免永久死锁
-        if (veh.dist > 6 || (veh.v < 0.3 && veh.wait > 8)) {
+        // 驶离路口区域即释放（越过路口对边才算清空）；长时间停滞则强制释放避免死锁
+        const clear = (veh.nodeRelease.clearDist || TRAFFIC.STOP_LINE) + 2;
+        if (veh.dist > clear || (veh.v < 0.3 && veh.wait > 8)) {
           veh.nodeRelease.passing--;
           veh.nodeRelease = null;
         }
@@ -1894,8 +2075,14 @@ export class TrafficSim {
         : (vlist.length ? vlist.reduce((a, v) => a + v.v, 0) / vlist.length : arc.v0);
       const deficit = 1 - Math.min(1, avg / arc.v0);
       const dens = Math.min(1, density / jamDensity);
-      // 密度为主、速度损失为辅；稀疏路段几乎不拥堵
-      arc.congestion = Math.max(0, Math.min(1, dens + deficit * 0.45 * Math.min(1, dens * 4)));
+      // 密度为主、速度损失为辅；稀疏路段几乎不拥堵。
+      // 注意：路口红灯排队的密度其实不高，只是「停着」——
+      // 早期版本速度损失权重太大，正常等个红灯就被算成 40% 拥堵，
+      // 面板上的数字完全没法反映真实的堵点。这里以密度为主，
+      // 并且做时间平滑（EMA），避免红灯一黄一绿地闪。
+      const raw = Math.max(0, Math.min(1, dens * 0.82 + deficit * 0.22 * Math.min(1, dens * 2.5)));
+      arc.congestion = arc._cong === undefined ? raw : arc._cong * 0.55 + raw * 0.45;
+      arc._cong = arc.congestion;
       arc.avgSpeed = avg;
       arc.density = density;
       if (vlist.length) {
@@ -1907,13 +2094,15 @@ export class TrafficSim {
     s.vehicles = this.vehicles.length;
     // 出行目的分布 + 特种车辆数（供 UI 展示）
     const byPurpose = {};
-    let emergency = 0, dwelling = 0;
+    let emergency = 0, dwelling = 0, throughOnRoad = 0;
     for (const v of this.vehicles) {
       const pp = v.purpose || 'other';
       byPurpose[pp] = (byPurpose[pp] || 0) + 1;
       if (TRAFFIC.SPECIAL_TYPES[v.type]) emergency++;
       if (v.dwell > 0) dwelling++;
+      if (v.through) throughOnRoad++;
     }
+    s.throughOnRoad = throughOnRoad;
     s.byPurpose = byPurpose;
     s.emergency = emergency;
     s.dwelling = dwelling;
@@ -1926,7 +2115,10 @@ export class TrafficSim {
       const a = net.arcs[e.forwardArc], b = net.arcs[e.backwardArc];
       const c = Math.max(a.congestion, b.congestion);
       e.congestion = c;
-      csum += c; cn++;
+      // 按「路上的车」加权：空路段的 0 拥堵不该把平均值拉平
+      // （否则真正堵死的那几条路在面板上只显示 5%）。
+      const n = a.vehicles.length + b.vehicles.length;
+      if (n > 0) { csum += c * n; cn += n; }
     }
     s.congestion = cn ? (csum / cn) * 100 : 0;
     // 出行时间指数：自由流时间 vs 实际

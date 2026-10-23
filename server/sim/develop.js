@@ -17,10 +17,12 @@ function _clearBuilding(t) {
 /** 是否与道路相邻 */
 function hasRoadAccess(city, i) {
   const x = i % S, z = (i / S) | 0;
-  if (x > 0 && city.tiles[i - 1].road) return true;
-  if (x < S - 1 && city.tiles[i + 1].road) return true;
-  if (z > 0 && city.tiles[i - S].road) return true;
-  if (z < S - 1 && city.tiles[i + S].road) return true;
+  // 高架（over）也算「有路可达」—— 高架两侧的地块同样能开车出去。
+  // 之前只看地面道路，导致高架环线两侧整条带子永远开发不了（大片空地）。
+  if (x > 0 && (city.tiles[i - 1].road || city.tiles[i - 1].over)) return true;
+  if (x < S - 1 && (city.tiles[i + 1].road || city.tiles[i + 1].over)) return true;
+  if (z > 0 && (city.tiles[i - S].road || city.tiles[i - S].over)) return true;
+  if (z < S - 1 && (city.tiles[i + S].road || city.tiles[i + S].over)) return true;
   return false;
 }
 
@@ -148,10 +150,12 @@ function computeLandValue(city) {
     const x = i % S, z = (i / S) | 0;
     // 临路加成
     let roadQ = 0;
-    if (x > 0 && tiles[i - 1].road) roadQ = Math.max(roadQ, quality(tiles[i - 1].road));
-    if (x < S - 1 && tiles[i + 1].road) roadQ = Math.max(roadQ, quality(tiles[i + 1].road));
-    if (z > 0 && tiles[i - S].road) roadQ = Math.max(roadQ, quality(tiles[i - S].road));
-    if (z < S - 1 && tiles[i + S].road) roadQ = Math.max(roadQ, quality(tiles[i + S].road));
+    // 高架同样算「临路」（高架两侧的地块也值钱）
+    const qOf = (t) => (t.road ? quality(t.road) : (t.over ? quality(t.over) * 0.85 : 0));
+    if (x > 0) roadQ = Math.max(roadQ, qOf(tiles[i - 1]));
+    if (x < S - 1) roadQ = Math.max(roadQ, qOf(tiles[i + 1]));
+    if (z > 0) roadQ = Math.max(roadQ, qOf(tiles[i - S]));
+    if (z < S - 1) roadQ = Math.max(roadQ, qOf(tiles[i + S]));
     v += LAND.ROAD_BONUS * roadQ;
     // 服务与公园
     v += LAND.SERVICE_BONUS * t.coverage;
@@ -246,6 +250,9 @@ function updateGrowth(city) {
     const t = tiles[i];
     if (!t.zone) continue;
     t.age++;
+    // 高度上限：这块地被规划成「最多盖到 N 级」就不再长高了
+    // （高架沿线限高 -> 桥面看得见；核心区才允许高层）
+    const maxLevel = t.hcap ? Math.min(3, t.hcap) : 3;
     const demand = dByZone[t.zone] || 0;
     const access = hasRoadAccess(city, i);
     const ok = t.power && t.water;
@@ -258,7 +265,7 @@ function updateGrowth(city) {
         // 商业/工业开门即满编（岗位先于人口出现，移民才有工作可找）
         if (Math.random() < p) { t.level = 1; t.age = 0; t.occ = (t.zone === 1 ? 0 : 1); changed = true; }
       }
-    } else if (t.level < 3) {
+    } else if (t.level < maxLevel) {
       // 升级
       if (access && ok && demand > 0.05 && t.land >= landThreshold[t.level + 1]) {
         // 逐级生长：一级->二级较快，二级->三级更慢（城市需要好多天才能长成）

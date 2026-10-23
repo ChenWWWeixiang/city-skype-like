@@ -7,19 +7,19 @@ import { groundHeightAt } from './world.js';
 
 const SPECS = {
   1: [
-    { w: 11, d: 11, h: 4.6, c: [0xc9b598, 0xbda78c, 0xd6c3a4, 0xb59a7f] },
-    { w: 13, d: 13, h: 13, c: [0xd8c6ab, 0xcdb89c, 0xe0d0b8] },
-    { w: 14, d: 14, h: 30, c: [0xdcd0bb, 0xc9bda8, 0xe6dccb] },
+    { w: 9.5, d: 9.5, h: 4.6, c: [0xc9b598, 0xbda78c, 0xd6c3a4, 0xb59a7f] },
+    { w: 11, d: 11, h: 11, c: [0xd8c6ab, 0xcdb89c, 0xe0d0b8] },
+    { w: 12.5, d: 12.5, h: 24, c: [0xdcd0bb, 0xc9bda8, 0xe6dccb] },
   ],
   2: [
-    { w: 12, d: 10, h: 5, c: [0x93aec4, 0x86a2b8, 0x9db6cb] },
-    { w: 14, d: 13, h: 15, c: [0x8fa9bf, 0x7f9bb2, 0x9db5c8] },
-    { w: 14, d: 14, h: 34, c: [0x7d9cb6, 0x6e8ea9, 0x8fb0c8] },
+    { w: 10.5, d: 9, h: 5, c: [0x93aec4, 0x86a2b8, 0x9db6cb] },
+    { w: 11.5, d: 11, h: 12.5, c: [0x8fa9bf, 0x7f9bb2, 0x9db5c8] },
+    { w: 12.5, d: 12.5, h: 28, c: [0x7d9cb6, 0x6e8ea9, 0x8fb0c8] },
   ],
   3: [
-    { w: 13, d: 11, h: 5.5, c: [0xa89a86, 0x9a8c78, 0xb5a894] },
-    { w: 14, d: 14, h: 8.5, c: [0x9e9280, 0x8f8472, 0xaaa08c] },
-    { w: 15, d: 15, h: 12, c: [0x8e8574, 0x7f7768, 0x9c9382] },
+    { w: 11, d: 9.5, h: 5.5, c: [0xa89a86, 0x9a8c78, 0xb5a894] },
+    { w: 12, d: 12, h: 8.5, c: [0x9e9280, 0x8f8472, 0xaaa08c] },
+    { w: 13, d: 13, h: 12, c: [0x8e8574, 0x7f7768, 0x9c9382] },
   ],
 };
 

@@ -110,15 +110,22 @@ async function main() {
   }
   let cityId = params.get('c');
   if (!cityId) {
-    // 无参数：请求创建一座新城市
+    // 无参数：优先打开默认落地城（示范城：高架环线 + 穿山隧道 + 跨河大桥），
+    // 没有示范城时才新建一座空城。
     try {
-      const r = await fetch('/api/cities', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: '新城市' }),
-      });
-      const j = await r.json();
-      cityId = j.id;
-      history.replaceState(null, '', '?c=' + cityId);
+      const fr = await fetch('/api/cities/featured');
+      const fj = await fr.json();
+      if (fj && fj.id) {
+        cityId = fj.id;
+      } else {
+        const r = await fetch('/api/cities', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: '新城市' }),
+        });
+        const j = await r.json();
+        cityId = j.id;
+      }
+      if (cityId) history.replaceState(null, '', '?c=' + cityId);
     } catch (e) { /* 忽略，使用本地模式 */ }
   }
   net.connect(cityId);

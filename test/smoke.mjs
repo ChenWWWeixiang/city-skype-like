@@ -19,8 +19,16 @@ function check(name, cond, extra = '') {
 console.log('\n[1] 路网抽取');
 const c = new City({ name: '冒烟测试', flat: true });
 const road = [], res = [], com = [], ind = [];
-for (let x = 0; x < 34; x++) { road.push(T(x, 20)); road.push(T(x, 26)); }
-for (let z = 20; z <= 26; z++) road.push(T(16, z));
+// 道路必须按「路径顺序」传入（路网靠它记录这条路实际怎么走）
+const line = (x0, z0, x1, z1) => {
+  const out = [];
+  const n = Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0));
+  for (let i = 0; i <= n; i++) out.push(T(Math.round(x0 + (x1 - x0) * i / n), Math.round(z0 + (z1 - z0) * i / n)));
+  return out;
+};
+road.push(...line(0, 20, 33, 20));
+road.push(...line(0, 26, 33, 26));
+road.push(...line(16, 20, 16, 26));
 for (let x = 9; x < 33; x++) { res.push(T(x, 21)); com.push(T(x, 25)); ind.push(T(x, 27)); }
 check('道路建造', c.buildRoad(road, 1).ok);
 check('路网生成节点', c.net.nodes.length >= 6, c.net.nodes.length + ' 个节点');

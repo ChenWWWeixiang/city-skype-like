@@ -24,6 +24,21 @@ export class UI {
     this.bindStatic();
   }
 
+  /** 同步选路方式按钮的选中状态 */
+  setRouting(mode) {
+    const seg = $('routing-modes');
+    if (!seg) return;
+    seg.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', b.dataset.mode === mode);
+    });
+    const hint = $('routing-hint');
+    if (hint) {
+      hint.textContent = mode === 'adaptive'
+        ? '动态绕行：车辆会实时躲开已经堵死的路段（会绕远路，但不会陷在原地）。'
+        : '按限速最短路：车辆按限速算最快到达，固定走同一条路 —— 堵车是交通流自己跑出来的。';
+    }
+  }
+
   /** 同步信号灯方案按钮的选中状态 */
   setSignalMode(mode) {
     const seg = $('signal-modes');
@@ -66,6 +81,16 @@ export class UI {
       });
     });
     $('btn-panel').addEventListener('click', () => $('panel').classList.toggle('collapsed'));
+    // 选路方式
+    const rseg = $('routing-modes');
+    if (rseg) {
+      rseg.addEventListener('click', (e) => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        this.net.send({ name: 'routing', mode: b.dataset.mode });
+        this.setRouting(b.dataset.mode);
+      });
+    }
     // 信号灯方案
     const seg = $('signal-modes');
     if (seg) {
@@ -134,6 +159,8 @@ export class UI {
     $('date').textContent = d.year + '.' + d.month + '.' + d.day;
     $('clock').textContent = String(d.hour).padStart(2, '0') + ':' + String(d.minute).padStart(2, '0');
     this.setSpeedUI(state.speed);
+    if (state.signalMode !== undefined) this.setSignalMode(state.signalMode);
+    if (state.routing !== undefined) this.setRouting(state.routing);
 
     for (const k of ['res', 'com', 'ind']) {
       const v = Math.max(-1, Math.min(1, state.demand[k] || 0));
@@ -233,6 +260,7 @@ export class UI {
     $('t-unreach').textContent = fmt(tr.unreachable || 0);
     $('t-dispatch').textContent = fmt(tr.dispatched || 0);
     $('t-dwell').textContent = fmt(tr.dwelling || 0);
+    $('t-through').textContent = fmt((tr.throughOnRoad || 0)) + '（累计 ' + fmt(tr.through || 0) + '）';
     const bp = tr.byPurpose || {};
     $('t-work').textContent = fmt(bp.work || 0);
     $('t-shop').textContent = fmt(bp.shop || 0);
