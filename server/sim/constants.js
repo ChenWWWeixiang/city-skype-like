@@ -13,7 +13,7 @@ export const ELEV = {
     0.35,
   MAX_GRADE: 0.18,      // 最大坡度 18%
   // --- 地形高程 ---
-  TERRAIN_MAX: 34,      // 最高点（米）
+  TERRAIN_MAX: 44,      // 最高点（米）
   RIVER_BED: -3.2,      // 河床高度（水面为 0）
   BANK_TILES: 5,        // 河岸过渡带宽度（格）
   BANK_TOP: 0.6,        // 河岸顶面高度（刚好高出水面一点）
@@ -155,6 +155,19 @@ export const SIGNAL = {
   // 若用 60 秒以上的周期，红灯等待会吃掉绝大部分时间（车队均速掉到 1~2 m/s）。
   CYCLE: 24,       // 完整周期（南北 + 东西各一轮），1x 下约 6 秒一个周期
   WAVE: 1.45,      // 绿波系数：每格相位提前秒数（16m/格 ÷ 11.1m/s ≈ 1.44s，与车速匹配）
+  // --- 信号灯方案（可在城市设置里切换）---------------------------------
+  // MODE.FOUR_WAY  : 四向分相 —— 北/东/南/西 各自放行，互不冲突
+  // MODE.PERMISSIVE: 对向通行 —— 南北一组、东西一组；左转/右转让行（permissive）
+  // MODE.AUTO      : 自动 —— 四岔主干路口用四向分相，其余用对向通行
+  MODE: { FOUR_WAY: 0, PERMISSIVE: 1, AUTO: 2 },
+  MODE_LIST: [
+    { id: 0, key: 'four', name: '四向分相', desc: '四个方向分别放行，互不冲突（最安全，最堵）' },
+    { id: 1, key: 'perm', name: '对向通行', desc: '南北/东西成对放行，左转右转让行（通行效率最高）' },
+    { id: 2, key: 'auto', name: '自动', desc: '大路口四向分相，小路口对向通行' },
+  ],
+  CYCLE_FOUR_WAY: 32,        // 四向分相的周期（4 个相位，各 8 秒）
+  PERMISSIVE_YIELD: 30,      // 允许左转时，检查对向直行车的距离（米）
+  RIGHT_TURN_FREE: true,     // 右转不受红灯限制（让行后通行）—— 与真实规则一致
 };
 
 export const TRAFFIC = {
@@ -199,6 +212,9 @@ export const TRAFFIC = {
   TURN_ANGLE: 0.55,        // 超过这个转角(rad)就算「转弯」
   INTERSECTION_ZONE: 9,     // 路口影响半径 (m)：进入路口就开始减速
   TURN_RADIUS: 11,         // 转弯圆滑半径 (m)：车辆在路口走一段弧线，而不是直角折线
+  SLIP_RADIUS: 17,         // 大型路口「弧形右转通道」的转弯半径 (m)
+  SLIP_FLARE: 4.5,         // 右转通道外扩（米）：车辆从路口外侧绕过
+  TURN_LANE_DIST: 70,      // 距路口多少米开始提前变道到转向车道
   LANE_CHANGE_RATE: 2.0,   // 变道横向移动速率（1/秒）：变道要「滑过去」，不能瞬移
   GRADE_SPEED: 0.55,       // 坡度对车速的额外影响系数（每 10% 坡度）
   // 特种车辆（外形参数）

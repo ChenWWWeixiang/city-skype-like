@@ -24,6 +24,23 @@ export class UI {
     this.bindStatic();
   }
 
+  /** 同步信号灯方案按钮的选中状态 */
+  setSignalMode(mode) {
+    const seg = $('signal-modes');
+    if (!seg) return;
+    seg.querySelectorAll('button').forEach((b) => {
+      b.classList.toggle('on', +b.dataset.mode === mode);
+    });
+    const hint = $('signal-hint');
+    if (hint) {
+      hint.textContent = mode === 0
+        ? '四向分相：四个方向轮流放行，右转也要等本方向的绿灯。'
+        : (mode === 1
+          ? '对向通行：南北/东西成对放行，左转右转随时可走（但要让行）。'
+          : '自动：大路口四向分相，小路口对向通行。');
+    }
+  }
+
   async loadConfig() {
     const r = await fetch('/api/config');
     this.config = await r.json();
@@ -49,6 +66,16 @@ export class UI {
       });
     });
     $('btn-panel').addEventListener('click', () => $('panel').classList.toggle('collapsed'));
+    // 信号灯方案
+    const seg = $('signal-modes');
+    if (seg) {
+      seg.addEventListener('click', (e) => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        this.net.send({ name: 'signal', mode: +b.dataset.mode });
+        this.setSignalMode(+b.dataset.mode);
+      });
+    }
     // 税率
     for (const k of ['res', 'com', 'ind']) {
       const sl = $('tax-' + k);

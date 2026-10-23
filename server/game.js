@@ -18,6 +18,8 @@ export class Game {
     this.ledgerSaved = 0;
     this.congestionMap = new Uint8Array(MAP.SIZE * MAP.SIZE);
     this.signalMap = new Uint8Array(MAP.SIZE * MAP.SIZE);
+    // 每个进口方向的灯色（2bit/方向：0红 1黄 2绿）
+    this.signalMap2 = new Uint8Array(MAP.SIZE * MAP.SIZE);
     this._lastBroadcast = 0;
     this.headerExtra = null;      // 实验室等特殊场景可注入额外状态
   }
@@ -81,19 +83,37 @@ export class Game {
     return new Float32Array(list);
   }
 
-  /** 更新信号灯贴图：bit0 有灯, bit1-2 状态(0绿1黄2全红), bit3 相位, bit4 层级 */
+  /**
+   * 更新信号灯贴图：
+   *   signalMap  : bit0 有灯, bit1-2 状态(0绿1黄2全红), bit3-4 相位, bit5 层级
+   *   signalMap2 : 每个进口方向单独 2bit（0红 1黄 2绿）：N/E/S/W
+   */
   updateSignalMap() {
     const map = this.signalMap;
+    const map2 = this.signalMap2;
     map.fill(0);
+    map2.fill(0);
     const net = this.city.net;
     if (!net) return;
+    const SHIFT = { N: 0, E: 2, S: 4, W: 6 };
     for (const node of net.nodes) {
       if (!node.hasSignal) continue;
       const cur = map[node.tile];
-      if (cur !== 0 && (cur & 16) === 0) continue;   // 同格已有地面层信号灯则优先
+      if (cur !== 0 && (cur & 32) === 0) continue;   // 同格已有地面层信号灯则优先
       const s = node.signal;
       const st = s.state === 'green' ? 0 : s.state === 'yellow' ? 1 : 2;
-      map[node.tile] = 1 | (st << 1) | ((s.phase & 1) << 3) | ((node.layer & 1) << 4);
+      map[node.tile] = 1 | (st << 1) | ((s.phase & 3) << 3) | ((node.layer & 1) << 5);
+      // 每个进口方向单独算灯色（4 向分相时，只有当前进口是绿的）
+      let m2 = 0;
+      const moves = s.greenMoves || [];
+      for (const a of node.approaches || []) {
+        const green = moves.indexOf(a.dir + ':S') >= 0;
+        let v = 0;
+        if (st === 0) v = green ? 2 : 0;
+        else if (st === 1) v = green ? 1 : 0;
+        m2 |= (v << SHIFT[a.dir]);
+      }
+      map2[node.tile] = m2;
     }
   }
 
@@ -142,6 +162,8 @@ export class Game {
       },
       // 财政结算步长（游戏分钟）
       settleMinutes: c.settleMinutes,
+      // 城市设置（信号灯方案）
+      signalMode: (c.settings && c.settings.signalMode) || 0,
       // 车队（守恒：路上 + 车库 + 特种）
       fleet: {
         total: c.traffic.fleet.total, cars: c.traffic.fleet.cars,
@@ -184,6 +206,7 @@ export class Game {
       Buffer.from(vehicles.buffer, vehicles.byteOffset, vehicles.byteLength),
       Buffer.from(this.congestionMap.buffer, this.congestionMap.byteOffset, this.congestionMap.byteLength),
       Buffer.from(this.signalMap.buffer, this.signalMap.byteOffset, this.signalMap.byteLength),
+      Buffer.from(this.signalMap2.buffer, this.signalMap2.byteOffset, this.signalMap2.byteLength),
     ]);
     for (const ws of this.clients) {
       if (ws.readyState === 1) ws.send(frame, { binary: true });
@@ -226,6 +249,11 @@ export class Game {
       }
       case 'settle': {
         const res = c.setSettleStep(cmd.minutes);
+        reply(res);
+        break;
+      }
+      case 'signal': {
+        const res = c.setSignalMode(cmd.mode);
         reply(res);
         break;
       }

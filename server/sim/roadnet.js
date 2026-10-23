@@ -13,14 +13,25 @@ export const DIRS = [
   { dx: 1, dz: 1, bit: 8, name: 'SE', opp: 128, axis: 'd', ang: 135 },
   { dx: 0, dz: 1, bit: 16, name: 'S', opp: 1, axis: 'z', ang: 180 },
   { dx: -1, dz: 1, bit: 32, name: 'SW', opp: 2, axis: 'd', ang: 225 },
-  { dx: -1, dz: 0, bit: 64, name: 'W', opp: 8, axis: 'x', ang: 270 },
-  { dx: -1, dz: -1, bit: 128, name: 'NW', opp: 4, axis: 'd', ang: 315 },
+  { dx: -1, dz: 0, bit: 64, name: 'W', opp: 4, axis: 'x', ang: 270 },
+  { dx: -1, dz: -1, bit: 128, name: 'NW', opp: 8, axis: 'd', ang: 315 },
 ];
 
 export const tileIndex = (x, z) => z * MAP.SIZE + x;
 export const worldX = (x) => (x + 0.5) * MAP.TILE - (MAP.SIZE * MAP.TILE) / 2;
 export const worldZ = (z) => (z + 0.5) * MAP.TILE - (MAP.SIZE * MAP.TILE) / 2;
 export const dirByBit = (bit) => DIRS.find((d) => d.bit === bit);
+
+/**
+ * 由「驶入路口的行驶方向」反推进口方向：
+ *   朝南开(+Z) 的人来自北方 -> 'N'；朝北开的人来自南方 -> 'S'；
+ *   朝东开(+X) 的人来自西方 -> 'W'；朝西开的人来自东方 -> 'E'。
+ */
+export function approachDir(heading) {
+  const fx = Math.sin(heading), fz = Math.cos(heading);
+  if (Math.abs(fz) >= Math.abs(fx)) return fz > 0 ? 'N' : 'S';
+  return fx > 0 ? 'W' : 'E';
+}
 
 function popcount(m) {
   let c = 0;
@@ -48,7 +59,8 @@ function collectLayers(tiles) {
 
 /** 两个层格点能否直接相连 */
 function canConnect(a, b) {
-  if (a.layer === b.layer) return Math.abs(a.h - b.h) <= ELEV.MAX_RAMP;
+  // 留一点容差：路面高程是浮点运算，恰好等于坡度上限时会因为舍入而断开路网
+  if (a.layer === b.layer) return Math.abs(a.h - b.h) <= ELEV.MAX_RAMP + 0.12;
   // 跨层仅在坡道落地处连通（两层路面高度一致）
   return Math.abs(a.h - b.h) <= 0.6;
 }
@@ -146,9 +158,13 @@ export function buildNetwork(tiles, roadDefs) {
     nodes.push({
       id: nodes.length, tile: g.tile, x: g.x, z: g.z, wx: g.wx, wz: g.wz,
       arcs: [], passing: 0, layer: nodeLayer, hasSignal: false,
+      mask: g.mask,
+      // 进口方向（从哪个方向开进来）与「是否大型路口」由 traffic.rebuild 补全
+      approaches: [], slip: null, wide: false,
       signal: {
         // 相位偏移沿 x/z 递减 -> 形成沿走廊推进的"绿波"
         offset: ((-(g.x + g.z) * SIGNAL.WAVE) % SIGNAL.CYCLE + SIGNAL.CYCLE) % SIGNAL.CYCLE,
+        baseOffset: ((-(g.x + g.z) * SIGNAL.WAVE) % SIGNAL.CYCLE + SIGNAL.CYCLE) % SIGNAL.CYCLE,
         t: (nodes.length * 7) % SIGNAL.CYCLE,
         phase: 0,
         state: 'green',
@@ -229,7 +245,14 @@ export function buildNetwork(tiles, roadDefs) {
         if (seenEdges.has(ekey)) continue;
         seenEdges.add(ekey);
 
-        const type = eTiles.reduce((mn, t) => Math.min(mn, tiles[t].road || tiles[t].over || 99), 99);
+        // 道路等级必须按「本层」取：地面层看 road，高架层看 over。
+        // 之前用 min(road, over) 会让「高架高速跨过大道路面」的那几格
+        // 把整条高架高速的等级算成大道 —— 于是限速、车道数、宽度全都不对，
+        // 高架上也就永远没有车（太慢没人愿意走）。
+        const type = eTiles.reduce((mn, t) => {
+          const v = L.layer === 1 ? (tiles[t].over || 0) : (tiles[t].road || 0);
+          return v ? Math.min(mn, v) : mn;
+        }, 99);
         const def = roadDefs[type];
         const laneTypes = [];
         // 地面层与高架层各自维护车道类型
@@ -278,17 +301,25 @@ export function buildNetwork(tiles, roadDefs) {
       const p0 = arc.poly[0], p1 = arc.poly[arc.poly.length - 1];
       const ddx = p1.x - p0.x, ddz = p1.z - p0.z;
       arc.side = arc.axis === 'x' ? (ddx > 0 ? -1 : 1) : (ddz > 0 ? 1 : -1);
-      // 车道类型按方向重排：lane 0 = 该方向最右侧车道
+      // 车道类型按方向重排：lane 0 = 该方向最右侧车道（右侧通行）
       const N = edge.lanes;
       arc.laneTypes = [];
       for (let k = 0; k < arc.lanes; k++) {
-        const g = arc.side < 0 ? k : (N - 1 - k);
+        // 右侧通行：本方向最右侧车道 = 全局车道号中「靠行车方向右侧」的那一条。
+        // （原来这里是镜像的 —— 等于整个城市在靠左行驶）
+        const g = arc.side < 0 ? (N - 1 - k) : k;
         arc.laneTypes.push(edge.laneTypes[g] || 0);
       }
       arc.laneVehicles = Array.from({ length: arc.lanes }, () => []);
       arc.vehicles = [];
       arc.congestion = 0;
       arc.axis = arc.poly.length > 1 ? dominantAxis(arc.poly) : 'z';
+      // 段首 / 段尾的行驶方向（转向判定要用，避免每帧重算几何）
+      arc.startHeading = arc.poly.length > 1
+        ? Math.atan2(arc.poly[1].x - arc.poly[0].x, arc.poly[1].z - arc.poly[0].z) : 0;
+      const L2 = arc.poly.length - 1;
+      arc.endHeading = arc.poly.length > 1
+        ? Math.atan2(arc.poly[L2].x - arc.poly[L2 - 1].x, arc.poly[L2].z - arc.poly[L2 - 1].z) : 0;
       // 弯道限速：拐弯越急，能跑的速度越低（真实道路就是这样）
       const turn = maxTurnAngle(arc.poly);
       arc.turnAngle = turn;
@@ -308,25 +339,52 @@ export function buildNetwork(tiles, roadDefs) {
     const allHighway = node.arcs.length > 0 &&
       node.arcs.every((id) => arcs[id].type === 3);
     // 信号灯布设：
-    //   四岔及以上、且有主干道（大道/高速）参与 -> 设灯
-    //   三岔口只有两条主干道相交                -> 设灯
-    //   纯支路交叉 / 死头路                     -> 让行
-    const majorZ = node.arcs.filter((id) => arcs[id].type >= 2 && arcs[id].axis !== 'x').length;
-    const majorX = node.arcs.filter((id) => arcs[id].type >= 2 && arcs[id].axis === 'x').length;
-    const majorArcs = majorZ + majorX;
-    node.hasSignal = !allHighway && (deg >= 4 ? majorArcs > 0 : majorArcs >= 4);
-    // 主次方向不对称配时：主干道方向绿灯更长（现实中主干道优先放行）
-    if (node.hasSignal) {
-      if (majorZ >= 2 && majorX >= 2) {
-        node.signal.split = 0.5;      // 两条主干道相交 -> 平分绿灯
-        node.signal.majorPhase = 0;
-      } else if (majorZ >= 2) {
-        node.signal.split = 0.62;     // 南北主干 -> 南北多放行
-        node.signal.majorPhase = 0;
-      } else {
-        node.signal.split = 0.38;
-        node.signal.majorPhase = 1;
-      }
+    //   两条以上主干道（大道/高速）相交 -> 设灯（三岔口也算）
+    //   四岔口 + 至少一条主干道         -> 设灯
+    //   纯支路交叉 / 死头路              -> 让行
+    // 注意：同一条路的两端算「一条路」，要用 edge 去重（否则三岔口会漏判）
+    const majorEdges = new Set();
+    for (const arcId of node.arcs) {
+      const a = arcs[arcId];
+      if (a.type >= 2) majorEdges.add(a.edge);
+    }
+    node.hasSignal = !allHighway && (majorEdges.size >= 2 || (deg >= 4 && majorEdges.size >= 1));
+
+    // ---- 进口方向 & 弧形右转通道 ---------------------------------------
+    // 一个路口的「进口」= 从哪个方向开进来的车道。
+    // 右侧通行下：进口在北(N) -> 右转出口在西(W)，用的是路口的西北角。
+    const ARM_BIT = { N: 1, E: 4, S: 16, W: 64 };
+    const RIGHT_EXIT = { N: 'W', E: 'N', S: 'E', W: 'S' };
+    const CORNER_BIT = { N: 128, E: 2, S: 32, W: 8 };
+    const acc = {};
+    for (const arcId of node.arcs) {
+      // node.arcs 里存的是「从本节点出发」的有向段；
+      // 驶入本节点的那一条是同一条路的反向段（to === node.id）。
+      const outArc = arcs[arcId];
+      const edge = edges[outArc.edge];
+      const inArcId = (arcId === edge.forwardArc) ? edge.backwardArc : edge.forwardArc;
+      const arc = arcs[inArcId];
+      if (!arc || arc.to !== node.id) continue;
+      const p = polyPoint(arc.poly, arc.length, arc.length);
+      const dir = approachDir(p.heading);
+      const a = acc[dir] || (acc[dir] = {
+        dir, axis: (dir === 'N' || dir === 'S') ? 'z' : 'x', arcs: [], lanes: 0, width: 0, type: 0,
+      });
+      a.arcs.push(inArcId);
+      a.lanes = Math.max(a.lanes, arc.lanes);
+      a.width = Math.max(a.width, arc.def.width);
+      a.type = Math.max(a.type, arc.type);
+    }
+    node.approaches = Object.keys(acc).map((k) => acc[k]);
+    // 大型路口：至少两条「双向多车道 / 大道级」的路相交
+    node.wide = node.approaches.filter((a) => a.lanes >= 2 || a.type >= 2).length >= 2;
+    // 弧形右转通道（slip lane）：四岔大路口 + 路口角上没有别的路 -> 右转走外侧弧线
+    node.slip = {};
+    for (const a of node.approaches) {
+      const ex = RIGHT_EXIT[a.dir];
+      const exitArm = (node.mask & ARM_BIT[ex]) !== 0;
+      const cornerFree = (node.mask & CORNER_BIT[a.dir]) === 0;
+      node.slip[a.dir] = !!(node.wide && node.approaches.length >= 4 && exitArm && cornerFree);
     }
   }
 

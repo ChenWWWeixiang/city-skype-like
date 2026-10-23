@@ -45,6 +45,15 @@ class MinHeap {
 
 let VEHICLE_SEQ = 1;
 
+// 路口角点方向（弧形右转通道绕行的方向）：
+//   北进口右转 -> 走西北角；东进口右转 -> 东北角；南进口右转 -> 东南角；西进口右转 -> 西南角
+const CORNER_DIR = {
+  N: { x: -Math.SQRT1_2, z: -Math.SQRT1_2 },
+  E: { x: Math.SQRT1_2, z: -Math.SQRT1_2 },
+  S: { x: Math.SQRT1_2, z: Math.SQRT1_2 },
+  W: { x: -Math.SQRT1_2, z: Math.SQRT1_2 },
+};
+
 export class TrafficSim {
   constructor(city) {
     this.city = city;
@@ -102,6 +111,8 @@ export class TrafficSim {
     for (const a of net.arcs) laneM += a.length * a.lanes;
     // 实际可用能力取理论值的 75%：接近满负荷时排队会无限增长（死亡螺旋）
     this.capacityRate = laneM / 25000 * 0.75;
+    // 信号相位表（随路网 / 方案变化重建）
+    this.rebuildSignalPlans();
     this.computeParkedCars();
   }
 
@@ -1076,6 +1087,64 @@ export class TrafficSim {
     return vehicleType !== 'bike' || TRAFFIC.SPECIAL_TYPES[vehicleType] !== undefined;
   }
 
+  /**
+   * 目标车道（右侧通行）：
+   *   右转 -> 最右车道(0)；左转 -> 最左车道(lanes-1)；直行 -> 按车道比例映射。
+   * 宽路并入窄路时，多出来的车道从左往右依次并掉（靠右的车道先走）。
+   * 返回 -1 表示没有可用车道（该等待）。
+   */
+  _targetLane(veh, arc, nextArc) {
+    const turn = this._turnType(arc, nextArc);
+    const cur = Math.max(1, arc.lanes), nxt = Math.max(1, nextArc.lanes);
+    let want;
+    if (turn === 'R') want = 0;
+    else if (turn === 'L') want = nxt - 1;
+    else want = Math.floor(veh.lane * nxt / cur);
+    want = Math.max(0, Math.min(nxt - 1, want));
+    const types = nextArc.laneTypes || [];
+    if (this._laneAllowed(types[want] || 0, veh.type)) return want;
+    // 目标车道类型不允许（例如自行车道）-> 就近找同转向的替代车道
+    for (let d = 1; d < nxt; d++) {
+      for (const l of [want - d, want + d]) {
+        if (l < 0 || l >= nxt) continue;
+        if (turn === 'R' && l > want) continue;
+        if (turn === 'L' && l < want) continue;
+        if (!this._laneAllowed(types[l] || 0, veh.type)) continue;
+        return l;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * 提前变道到「转向车道」：右转挪到最右车道，左转挪到最左车道。
+   * 真实城市里这就是路口前的导向车道 —— 没有它，所有车都挤在同一条道上抢行。
+   */
+  _laneChangeForTurn(veh, arc, nextArc) {
+    if (!nextArc || arc.lanes < 2) return;
+    const turn = this._turnType(arc, nextArc);
+    if (turn === 'S') return;
+    const want = turn === 'R' ? 0 : arc.lanes - 1;
+    if (veh.lane === want) return;
+    const lt = (arc.laneTypes || [])[want] || 0;
+    if (!this._laneAllowed(lt, veh.type)) return;
+    const tl = arc.laneVehicles[want];
+    const ahead = this._nearestAhead(tl, veh.dist);
+    if (ahead && ahead.dist - veh.dist - ahead.len < TRAFFIC.LANE_CHANGE_MIN_GAP) return;
+    let backGap = Infinity;
+    for (const o of tl) {
+      if (o.dist <= veh.dist) {
+        const g = veh.dist - o.dist - o.len;
+        if (g < backGap) backGap = g;
+      }
+    }
+    if (backGap < TRAFFIC.LANE_CHANGE_MIN_GAP) return;
+    this._removeFromArc(veh, arc);
+    veh.lane = want;
+    arc.laneVehicles[want].push(veh);
+    arc.vehicles.push(veh);
+  }
+
   /** 选择最空闲的可用车道 */
   _chooseLane(arc, vehicleType) {
     let lane = -1, best = -1;
@@ -1111,34 +1180,157 @@ export class TrafficSim {
     for (const node of this.net.nodes) {
       if (!node.hasSignal) continue;      // 断头路 / 弯道 / 高速互通不设信号灯
       const sig = node.signal;
-      sig.t = (sig.t + dt) % SIGNAL.CYCLE;
-      const c = (sig.t + sig.offset) % SIGNAL.CYCLE;
-      // 主次方向不对称配时：主干道方向的相位更长
-      const split = sig.split === undefined ? 0.5 : sig.split;
-      const majorPhase = sig.majorPhase === undefined ? 0 : sig.majorPhase;
-      const len = SIGNAL.CYCLE * split;
-      let local, greenLen;
-      if (c < len) {
-        sig.phase = majorPhase; local = c;
-        greenLen = len - SIGNAL.YELLOW - SIGNAL.ALL_RED;
-      } else {
-        sig.phase = 1 - majorPhase; local = c - len;
-        greenLen = SIGNAL.CYCLE - len - SIGNAL.YELLOW - SIGNAL.ALL_RED;
-      }
+      if (!sig.plan || !sig.plan.length) continue;
+      const cyc = sig.cycle || SIGNAL.CYCLE;
+      sig.t = (sig.t + dt) % cyc;
+      const c = (sig.t + sig.offset) % cyc;
+      const n = sig.plan.length;
+      const per = cyc / n;
+      const idx = Math.min(n - 1, Math.floor(c / per));
+      const local = c - idx * per;
+      sig.phase = idx;
+      const greenLen = sig.greenLen || (per - SIGNAL.YELLOW - SIGNAL.ALL_RED);
       if (local < greenLen) sig.state = 'green';
       else if (local < greenLen + SIGNAL.YELLOW) sig.state = 'yellow';
       else sig.state = 'allred';
+      // 本相位放行的「进口方向 + 转向」：客户端按它画灯色，仿真按它判通行权
+      sig.greenMoves = sig.plan[idx].moves;
+      // 让行判定（对向左转 / 横向右转）所需的冲突信息，每个 tick 算一次
+      this._updateConflicts(node);
     }
   }
 
-  /** 某进口方向是否可通行 */
-  _canGo(node, axis) {
+  /**
+   * 重建所有路口的信号相位表。
+   * 两种方案（可在城市设置里切换）：
+   *   四向分相 —— 北/东/南/西 各自一个相位，互不冲突（安全，但通行效率低）
+   *   对向通行 —— 南北一组、东西一组；左转/右转 permissive（要让行）
+   */
+  rebuildSignalPlans() {
+    const settings = (this.city && this.city.settings) || {};
+    const mode = settings.signalMode === undefined ? SIGNAL.MODE.AUTO : settings.signalMode;
+    for (const node of this.net.nodes) {
+      const sig = node.signal;
+      if (!node.hasSignal || !node.approaches || !node.approaches.length) {
+        sig.plan = null; sig.greenMoves = null; continue;
+      }
+      // 自动方案：只有「两条高速相交」这种真·快速路路口才用四向分相，
+      // 其余路口一律对向通行（否则整座城会堵成停车场）
+      const highwayArms = node.approaches.filter((a) => a.type >= 3).length;
+      const use = mode === SIGNAL.MODE.AUTO
+        ? (node.approaches.length >= 4 && highwayArms >= 2 ? SIGNAL.MODE.FOUR_WAY : SIGNAL.MODE.PERMISSIVE)
+        : mode;
+      const plan = [];
+      if (use === SIGNAL.MODE.FOUR_WAY) {
+        for (const d of ['N', 'E', 'S', 'W']) {
+          const a = node.approaches.find((x) => x.dir === d);
+          if (!a) continue;
+          plan.push({ name: d, moves: [d + ':S', d + ':L', d + ':R'] });
+        }
+      } else {
+        for (const axis of ['z', 'x']) {
+          const list = node.approaches.filter((a) => a.axis === axis);
+          if (!list.length) continue;
+          const moves = [];
+          for (const a of list) { moves.push(a.dir + ':S', a.dir + ':L', a.dir + ':R'); }
+          plan.push({ name: axis === 'z' ? 'NS' : 'EW', moves });
+        }
+      }
+      if (!plan.length) { sig.plan = null; sig.greenMoves = null; continue; }
+      const cycle = use === SIGNAL.MODE.FOUR_WAY ? SIGNAL.CYCLE_FOUR_WAY : SIGNAL.CYCLE;
+      const per = cycle / plan.length;
+      sig.plan = plan;
+      sig.cycle = cycle;
+      sig.mode = use;
+      sig.greenLen = Math.max(2, per - SIGNAL.YELLOW - SIGNAL.ALL_RED);
+      sig.phaseLen = per;
+      // 绿波偏移按新周期缩放
+      sig.offset = ((sig.baseOffset || 0) * (cycle / SIGNAL.CYCLE)) % cycle;
+    }
+  }
+
+  /** 某路口各进口的「冲突车流」（对向直行 / 横向直行），用于 permissive 让行 */
+  _updateConflicts(node) {
+    const OPP = { N: 'S', S: 'N', E: 'W', W: 'E' };
+    const CROSS = { N: ['E', 'W'], S: ['E', 'W'], E: ['N', 'S'], W: ['N', 'S'] };
+    const near = {};
+    for (const a of node.approaches) {
+      const list = [];
+      for (const arcId of a.arcs) {
+        const arc = this.net.arcs[arcId];
+        if (!arc) continue;
+        for (const veh of arc.vehicles) {
+          const d = arc.length - veh.dist;
+          if (d < 0 || d > SIGNAL.PERMISSIVE_YIELD) continue;
+          if (veh.v < 0.6) continue;                 // 停着的车不构成冲突
+          const nextId = veh.path ? veh.path[veh.pathIdx + 1] : undefined;
+          let turn = 'S';
+          if (nextId !== undefined && nextId >= 0 && this.net.arcs[nextId]) {
+            turn = this._turnType(arc, this.net.arcs[nextId]);
+          }
+          list.push(turn);
+        }
+      }
+      near[a.dir] = list;
+    }
+    const conf = {};
+    for (const a of node.approaches) {
+      let on = false, cross = false;
+      for (const t of near[OPP[a.dir]] || []) if (t !== 'L') { on = true; break; }
+      for (const c of CROSS[a.dir]) {
+        for (const t of near[c] || []) if (t !== 'L') { cross = true; break; }
+        if (cross) break;
+      }
+      conf[a.dir] = { on: on, cross: cross };
+    }
+    node.conflict = conf;
+  }
+
+  /** 转向判定：S 直行 / L 左转 / R 右转（dh<0 = 右转，dh>0 = 左转） */
+  _turnType(fromArc, toArc) {
+    if (!fromArc || !toArc) return 'S';
+    const h0 = fromArc.endHeading !== undefined ? fromArc.endHeading : 0;
+    const h1 = toArc.startHeading !== undefined ? toArc.startHeading : 0;
+    let dh = h1 - h0;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    if (Math.abs(dh) < TRAFFIC.TURN_ANGLE) return 'S';
+    return dh > 0 ? 'L' : 'R';
+  }
+
+  /** 车辆在 node 的「进口方向」（从哪个方向开进来） */
+  _approachOf(node, arc) {
+    if (!node) return 'N';
+    if (!node.approachOf) {
+      node.approachOf = {};
+      for (const a of node.approaches) for (const id of a.arcs) node.approachOf[id] = a.dir;
+    }
+    return node.approachOf[arc.id] || 'N';
+  }
+
+  /**
+   * 通行权判定：车辆能否从 fromArc 驶入 toArc。
+   *  - 四向分相：只有本进口方向轮到绿灯时才能走
+   *  - 对向通行：直行随本轴放行；左转要让对向直行车流；右转永远可走（让行横向车流）
+   *  - 弧形右转通道：右转走独立通道，不受信号灯限制
+   */
+  _canGo(node, fromArc, toArc) {
+    if (!node || !node.hasSignal) return true;
     const sig = node.signal;
-    if (!sig || !node.hasSignal) return true;
-    if (sig.state === 'allred') return false;
-    // phase 0: 南北放行(含斜向)  phase 1: 东西放行
-    if (sig.phase === 0) return axis !== 'x';
-    return axis === 'x';
+    if (!sig.plan || !sig.greenMoves) return true;
+    const approach = this._approachOf(node, fromArc);
+    const turn = this._turnType(fromArc, toArc);
+    // 弧形右转通道：物理上与信号车道分离 -> 不看信号灯
+    if (turn === 'R' && node.slip && node.slip[approach]) return true;
+    if (sig.state !== 'green') return false;
+    const conf = (node.conflict && node.conflict[approach]) || { on: false, cross: false };
+    if (turn === 'L' && sig.mode === SIGNAL.MODE.PERMISSIVE) {
+      if (conf.on) return false;                  // 对向有直行车 -> 让行
+    }
+    if (turn === 'R' && sig.mode === SIGNAL.MODE.PERMISSIVE) {
+      if (conf.cross) return false;              // 横向有车 -> 让行（红灯右转同理）
+    }
+    return sig.greenMoves.indexOf(approach + ':' + turn) >= 0;
   }
 
   /** 推进 dt 交通秒（交通时钟，与城市经济时钟解耦） */
@@ -1222,8 +1414,8 @@ export class TrafficSim {
         const node = net.nodes[arc.to];
         let canEnter = node.passing < SIGNAL.NODE_CAPACITY;
         if (canEnter) {
-          // 红绿灯：非放行方向需在停止线等待
-          if (!this._canGo(node, nextArc.axis)) canEnter = false;
+          // 红绿灯：按「进口方向 + 转向」判通行权（四向分相 / 对向通行 / 弧形右转通道）
+          if (!this._canGo(node, arc, nextArc)) canEnter = false;
         }
         if (canEnter) {
           // 目标路段入口是否有空间（且车道类型允许）
@@ -1239,9 +1431,16 @@ export class TrafficSim {
           if (veh.nextLane !== undefined && tryLane(veh.nextLane)) {
             laneOk = true;
           } else {
-            for (let l = 0; l < nextArc.lanes; l++) {
-              if (!tryLane(l)) continue;
-              veh.nextLane = l; laneOk = true; break;
+            // 转向车道：右转走最右车道、左转走最左车道、直行按比例映射
+            // （宽路 -> 窄路 时多出来的车道要并掉，靠右的车道先并）
+            const want = this._targetLane(veh, arc, nextArc);
+            if (want >= 0 && tryLane(want)) {
+              veh.nextLane = want; laneOk = true;
+            } else {
+              for (let l = 0; l < nextArc.lanes; l++) {
+                if (!tryLane(l)) continue;
+                veh.nextLane = l; laneOk = true; break;
+              }
             }
           }
           canEnter = laneOk;
@@ -1331,6 +1530,14 @@ export class TrafficSim {
       if (veh.v < v0 * 0.55 && arc.lanes > 1) {
         this._tryLaneChange(veh, arc);
       }
+      // --- 接近路口：提前变到「转向车道」（右转靠右、左转靠左）---
+      if (!isLast && arc.lanes > 1) {
+        const toNode = arc.length - veh.dist;
+        if (toNode < TRAFFIC.TURN_LANE_DIST && toNode > TRAFFIC.INTERSECTION_ZONE) {
+          const na = net.arcs[veh.path[veh.pathIdx + 1]];
+          if (na) this._laneChangeForTurn(veh, arc, na);
+        }
+      }
 
       // --- 位移（支持一步跨越多个路段） ---
       let move = veh.v * dt;
@@ -1352,7 +1559,7 @@ export class TrafficSim {
         const lane = Math.min(veh.nextLane ?? 0, nextArc.lanes - 1);
         const first = this._minDist(nextArc.laneVehicles[lane]);
         if (node.passing < SIGNAL.NODE_CAPACITY && first > TRAFFIC.ENTRY_GAP + veh.len &&
-            this._canGo(node, nextArc.axis)) {
+            this._canGo(node, arc, nextArc)) {
           // --- 转弯减速：方向变化越大，通过路口的速度越低 ---
           const h0 = polyPoint(arc.poly, arc.length, arc.length).heading;
           const h1 = polyPoint(nextArc.poly, 0, nextArc.length).heading;
@@ -1444,10 +1651,13 @@ export class TrafficSim {
     const laneW = arc.def.width / N;
     // 用「视觉车道」（小数）算横向位置：变道时车辆是横向滑过去，不是瞬移
     const lv = Math.max(0, Math.min(N - 1, veh.laneVis === undefined ? veh.lane : veh.laneVis));
-    const g = arc.side < 0 ? lv : (N - 1 - lv);
+    // 右侧通行：本方向车道 0（最右车道）必须落在行驶方向的「右侧」。
+    // 之前这里是镜像的 —— 整个城市其实在靠左行驶，右转车道也就跑到了左边。
+    const g = arc.side < 0 ? (N - 1 - lv) : lv;
     let off = arc.side * (g - (N - 1) / 2) * laneW;
     // 停放的车挪到马路牙子外侧（路肩），避免和行驶车辆穿模
-    if (veh.parked) off = arc.side * (arc.def.width / 2 + 0.95);
+    // （右侧通行的路肩在行驶方向的右手边）
+    if (veh.parked) off = -(arc.def.width / 2 + 0.95);
     const nx = Math.cos(p.heading), nz = -Math.sin(p.heading);
     veh.x = p.x + nx * off;
     veh.z = p.z + nz * off;
@@ -1466,50 +1676,68 @@ export class TrafficSim {
    * 路口转弯平滑：
    *   车辆进入路口前 R 米时，开始沿三次贝塞尔曲线过渡到下一条路的车道中心线上，
    *   曲线的起点切于本段方向、终点切于下一段方向 -> 朝向连续变化，没有直角折返。
+   *   大型路口的右转走「弧形右转通道」：半径更大、从路口外侧绕过，不受信号灯限制。
    */
   _smoothTurn(veh, arc, net) {
-    const R = TRAFFIC.TURN_RADIUS;
     const remain = arc.length - veh.dist;
-    let target = veh.heading;       // 默认：沿折线方向
-    if (remain <= R && remain >= -0.6) {
-      const nextId = veh.path[veh.pathIdx + 1];
-      const nextArc = nextId !== undefined && nextId >= 0 ? net.arcs[nextId] : null;
-      if (nextArc && arc.poly && nextArc.poly && nextArc.poly.length >= 2 && arc.poly.length >= 2) {
-        // 转弯计划只算一次并缓存：目标车道每帧可能变化（被别的车占掉），
-        // 若每帧重算，车会在路口前横向乱跳。
-        if (!veh.turnPlan || veh.turnPlan.nextId !== nextId) {
-          const a = arc.poly[arc.poly.length - 2], b = arc.poly[arc.poly.length - 1];
-          const dirA = Math.atan2(b.x - a.x, b.z - a.z);
-          const c = nextArc.poly[0], d = nextArc.poly[1];
-          const dirB = Math.atan2(d.x - c.x, d.z - c.z);
-          const s0 = Math.max(0, arc.length - R);
-          const p0 = polyPoint(arc.poly, s0, arc.length);
-          const p3 = { x: nextArc.poly[0].x, z: nextArc.poly[0].z, y: nextArc.poly[0].y || 0 };
-          const k = 0.55 * R;
-          const p1 = { x: p0.x + Math.sin(dirA) * k, z: p0.z + Math.cos(dirA) * k, y: p0.y || 0 };
-          const p2 = { x: p3.x - Math.sin(dirB) * k, z: p3.z - Math.cos(dirB) * k, y: p3.y };
-          const lv = veh.laneVis === undefined ? veh.lane : veh.laneVis;
-          const offA = this._laneOffsetVec(arc, lv, dirA);
-          const nextLane = Math.min(veh.nextLane ?? 0, Math.max(0, nextArc.lanes - 1));
-          const offB = this._laneOffsetVec(nextArc, nextLane, dirB);
-          veh.turnPlan = { nextId, dirA, dirB, p0, p1, p2, p3, offA, offB };
+    let target = veh.heading;
+    const nextId = veh.path ? veh.path[veh.pathIdx + 1] : undefined;
+    const nextArc = nextId !== undefined && nextId >= 0 ? net.arcs[nextId] : null;
+    const lv = veh.laneVis === undefined ? veh.lane : veh.laneVis;
+    const nextLane = nextArc ? Math.min(veh.nextLane ?? 0, Math.max(0, nextArc.lanes - 1)) : 0;
+    const laneKey = lv.toFixed(2) + '/' + nextLane;
+    // --- 取得（或建立）转弯计划 ---
+    const stale = !veh.turnPlan || veh.turnPlan.nextId !== nextId || veh.turnPlan.laneKey !== laneKey;
+    if (stale && nextArc && arc.poly && nextArc.poly && arc.poly.length >= 2 && nextArc.poly.length >= 2) {
+      // 离路口还远时不必重算（车道还在变），等靠近了再更新
+      if (!veh.turnPlan || veh.turnPlan.nextId !== nextId ||
+          remain <= (veh.turnPlan.R || TRAFFIC.TURN_RADIUS) + 6) {
+        const node = net.nodes[arc.to];
+        const turn = this._turnType(arc, nextArc);
+        const approach = node ? this._approachOf(node, arc) : 'N';
+        const slip = turn === 'R' && node && node.slip && node.slip[approach];
+        const R = slip ? TRAFFIC.SLIP_RADIUS : TRAFFIC.TURN_RADIUS;
+        const a = arc.poly[arc.poly.length - 2], b = arc.poly[arc.poly.length - 1];
+        const dirA = Math.atan2(b.x - a.x, b.z - a.z);
+        const c = nextArc.poly[0], d = nextArc.poly[1];
+        const dirB = Math.atan2(d.x - c.x, d.z - c.z);
+        const s0 = Math.max(0, arc.length - R);
+        const p0 = polyPoint(arc.poly, s0, arc.length);
+        let p3 = { x: nextArc.poly[0].x, z: nextArc.poly[0].z, y: nextArc.poly[0].y || 0 };
+        const k = 0.55 * R;
+        let p1 = { x: p0.x + Math.sin(dirA) * k, z: p0.z + Math.cos(dirA) * k, y: p0.y || 0 };
+        let p2 = { x: p3.x - Math.sin(dirB) * k, z: p3.z - Math.cos(dirB) * k, y: p3.y };
+        if (slip) {
+          // 弧形右转通道：绕着路口外侧切进出口车道（大半径 + 外扩）
+          const cd = CORNER_DIR[approach] || CORNER_DIR.N;
+          const flare = TRAFFIC.SLIP_FLARE;
+          const pExit = polyPoint(nextArc.poly, Math.min(R * 0.55, nextArc.length), nextArc.length);
+          p3 = { x: pExit.x, z: pExit.z, y: pExit.y || 0 };
+          p1 = { x: p1.x + cd.x * flare, z: p1.z + cd.z * flare, y: p1.y };
+          p2 = { x: p2.x + cd.x * flare * 0.6, z: p2.z + cd.z * flare * 0.6, y: p2.y };
         }
-        {
-          const { dirA, dirB, p0, p1, p2, p3, offA, offB } = veh.turnPlan;
-          // 曲线起点：本段中心线上 R 米处；终点：路口中心（下一段起点）
-          const t = Math.max(0, Math.min(1, (R - remain) / R));
-          const u = 1 - t;
-          const cx = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x;
-          const cz = u * u * u * p0.z + 3 * u * u * t * p1.z + 3 * u * t * t * p2.z + t * t * t * p3.z;
-          const cy = (u * u * u * (p0.y || 0)) + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y;
-          const tx = 3 * u * u * (p1.x - p0.x) + 6 * u * t * (p2.x - p1.x) + 3 * t * t * (p3.x - p2.x);
-          const tz = 3 * u * u * (p1.z - p0.z) + 6 * u * t * (p2.z - p1.z) + 3 * t * t * (p3.z - p2.z);
-          // 车道横向偏移：本段车道 -> 下一段车道，在路口内平滑过渡
-          veh.x = cx + offA.x + (offB.x - offA.x) * t;
-          veh.z = cz + offA.z + (offB.z - offA.z) * t;
-          veh.y = cy;
-          target = Math.atan2(tx, tz);
-        }
+        const offA = this._laneOffsetVec(arc, lv, dirA);
+        const offB = this._laneOffsetVec(nextArc, nextLane, dirB);
+        veh.turnPlan = { nextId, dirA, dirB, p0, p1, p2, p3, offA, offB, R, slip, laneKey };
+      }
+    }
+    const plan = veh.turnPlan;
+    if (plan && remain <= plan.R && remain >= -0.6) {
+      {
+        const { dirA, dirB, p0, p1, p2, p3, offA, offB } = plan;
+        // 曲线起点：本段中心线上 R 米处；终点：下一段（弧形右转通道则更靠外）
+        const t = Math.max(0, Math.min(1, (plan.R - remain) / plan.R));
+        const u = 1 - t;
+        const cx = u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x;
+        const cz = u * u * u * p0.z + 3 * u * u * t * p1.z + 3 * u * t * t * p2.z + t * t * t * p3.z;
+        const cy = (u * u * u * (p0.y || 0)) + (3 * u * u * t * p1.y) + (3 * u * t * t * p2.y) + (t * t * t * p3.y);
+        const tx = 3 * u * u * (p1.x - p0.x) + 6 * u * t * (p2.x - p1.x) + 3 * t * t * (p3.x - p2.x);
+        const tz = 3 * u * u * (p1.z - p0.z) + 6 * u * t * (p2.z - p1.z) + 3 * t * t * (p3.z - p2.z);
+        // 车道横向偏移：本段车道 -> 下一段车道，在路口内平滑过渡
+        veh.x = cx + offA.x + (offB.x - offA.x) * t;
+        veh.z = cz + offA.z + (offB.z - offA.z) * t;
+        veh.y = cy;
+        target = Math.atan2(tx, tz);
       }
     }
     // 朝向变化速率限制：单帧最多转 ~14°，任何原因都不会「瞬间翻面」
@@ -1528,7 +1756,7 @@ export class TrafficSim {
     const N = arc.def.lanes;
     const laneW = arc.def.width / N;
     const lv = Math.max(0, Math.min(N - 1, lane));
-    const g = arc.side < 0 ? lv : (N - 1 - lv);
+    const g = arc.side < 0 ? (N - 1 - lv) : lv;
     const off = arc.side * (g - (N - 1) / 2) * laneW;
     return { x: Math.cos(heading) * off, z: -Math.sin(heading) * off };
   }

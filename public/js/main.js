@@ -33,7 +33,7 @@ async function main() {
   const agents = new AgentRenderer(scene);
   const props = new PropRenderer(scene);
   const signals = new SignalRenderer(scene);
-  const overlay = new OverlayRenderer(scene);
+  const overlay = new OverlayRenderer(scene, state);
   const services = new ServiceRenderer(scene);
   const incidents = new IncidentRenderer(scene);
 

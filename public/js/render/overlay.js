@@ -3,6 +3,7 @@
 // ============================================================================
 import * as THREE from 'three';
 import { MAP, HALF } from '../constants.js';
+import { groundHeightAt } from './world.js';
 
 const ZONE_COLOR = {
   1: new THREE.Color(0x3f9d5c),
@@ -19,7 +20,8 @@ export const OVERLAY_MODES = [
 ];
 
 export class OverlayRenderer {
-  constructor(scene) {
+  constructor(scene, state) {
+    this.state = state || null;
     const geo = new THREE.PlaneGeometry(MAP.TILE * 0.92, MAP.TILE * 0.92);
     geo.rotateX(-Math.PI / 2);
     const mat = new THREE.MeshBasicMaterial({
@@ -83,6 +85,7 @@ export class OverlayRenderer {
 
   /** 依据当前模式重建叠加层 */
   rebuild(state) {
+    this.state = state;
     if (this.mode === 'none') { this.mesh.count = 0; return; }
     const m = this._m, c = this._c;
     let n = 0;
@@ -130,20 +133,31 @@ export class OverlayRenderer {
     const x = tile % MAP.SIZE, z = Math.floor(tile / MAP.SIZE);
     const wx = (x + 0.5) * MAP.TILE - HALF;
     const wz = (z + 0.5) * MAP.TILE - HALF;
-    this.radiusRing.position.set(wx, 0.14, wz);
+    const ry = this.tileY(tile);
+    this.radiusRing.position.set(wx, ry + 0.04, wz);
     this.radiusRing.scale.set(radiusMeters, 1, radiusMeters);
     this.radiusRing.material.color.setHex(color);
     this.radiusRing.visible = true;
-    this.radiusFill.position.set(wx, 0.13, wz);
+    this.radiusFill.position.set(wx, ry + 0.03, wz);
     this.radiusFill.scale.set(radiusMeters, 1, radiusMeters);
     this.radiusFill.material.color.setHex(color);
     this.radiusFill.visible = true;
   }
 
+  /** 某格地表的实际高度（预览/高亮必须贴在地面上，否则会被山体埋掉） */
+  tileY(tile) {
+    const st = this.state;
+    if (!st) return 0.1;
+    const x = tile % MAP.SIZE, z = Math.floor(tile / MAP.SIZE);
+    const wx = (x + 0.5) * MAP.TILE - HALF;
+    const wz = (z + 0.5) * MAP.TILE - HALF;
+    return groundHeightAt(st, wx, wz) + 0.10;
+  }
+
   setHover(tile) {
     if (tile < 0) { this.hover.visible = false; return; }
     const x = tile % MAP.SIZE, z = Math.floor(tile / MAP.SIZE);
-    this.hover.position.set((x + 0.5) * MAP.TILE - HALF, 0.09, (z + 0.5) * MAP.TILE - HALF);
+    this.hover.position.set((x + 0.5) * MAP.TILE - HALF, this.tileY(tile), (z + 0.5) * MAP.TILE - HALF);
     this.hover.visible = true;
   }
 
@@ -153,7 +167,8 @@ export class OverlayRenderer {
     for (let i = 0; i < n; i++) {
       const t = tiles[i];
       const x = t % MAP.SIZE, z = Math.floor(t / MAP.SIZE);
-      m.makeTranslation((x + 0.5) * MAP.TILE - HALF, 0.12, (z + 0.5) * MAP.TILE - HALF);
+      // 贴地：预览必须浮在当前地表之上（山体、路面都要算进去）
+      m.makeTranslation((x + 0.5) * MAP.TILE - HALF, this.tileY(t), (z + 0.5) * MAP.TILE - HALF);
       this.preview.setMatrixAt(i, m);
       const c = colors ? colors[i] : (color !== undefined ? color : 0xffffff);
       this._c.setHex(c);

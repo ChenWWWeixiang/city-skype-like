@@ -83,8 +83,41 @@ check('信号灯在一个周期内走完 绿->黄->全红', (() => {
   if (!node) return false;
   const seen = new Set();
   const phases = new Set();
-  for (let i = 0; i < 60; i++) { c2.traffic._updateSignals(1); seen.add(node.signal.state); phases.add(node.signal.phase); }
+  // 采样要够密：全红只有 0.5 秒，每秒采一次会漏掉
+  for (let i = 0; i < 240; i++) { c2.traffic._updateSignals(0.25); seen.add(node.signal.state); phases.add(node.signal.phase); }
   return seen.has('green') && seen.has('yellow') && seen.has('allred') && phases.size >= 2;
+})());
+// 两种信号灯方案：四向分相 / 对向通行
+check('信号灯方案可切换', (() => {
+  c2.setSignalMode(0);   // 四向分相
+  const p4 = c2.net.nodes.filter((n) => n.hasSignal).map((n) => (n.signal.plan ? n.signal.plan.length : 0));
+  c2.setSignalMode(1);   // 对向通行
+  const p2 = c2.net.nodes.filter((n) => n.hasSignal).map((n) => (n.signal.plan ? n.signal.plan.length : 0));
+  c2.setSignalMode(2);   // 自动
+  return p4.every((x) => x >= 2) && p2.some((x) => x === 1 || x === 2);
+})());
+// 右侧通行：车道 0（本方向最右车道）必须落在行驶方向的右手边
+check('右侧通行（车道 0 在道路右侧）', (() => {
+  const c3 = new City({ name: '通行方向', flat: true });
+  const seg = [];
+  for (let x = 5; x <= 20; x++) seg.push(T(x, 10));
+  c3.buildRoad(seg, 1);
+  let ok = true;
+  for (const arc of c3.net.arcs) {
+    const h = arc.endHeading;
+    const rx = -Math.cos(h), rz = Math.sin(h);   // 行驶方向的右手边
+    const veh = { id: 1, type: 'car', typeId: 0, len: 4, width: 2, arc: arc.id, lane: 0, dist: 8, v: 0,
+      path: [arc.id], pathIdx: 0, stops: [], stop: null, dwell: 0, parked: false, purpose: '',
+      destOffset: undefined, originTile: 0, destTile: 0, born: 0, wait: 0, tripTime: 0,
+      x: 0, z: 0, y: 0, heading: 0, grade: 0, homeTile: 0, state: 'driving' };
+    const p = { x: arc.poly[0].x + (arc.poly[1].x - arc.poly[0].x) * 0.5,
+      z: arc.poly[0].z + (arc.poly[1].z - arc.poly[0].z) * 0.5,
+      heading: Math.atan2(arc.poly[1].x - arc.poly[0].x, arc.poly[1].z - arc.poly[0].z) };
+    c3.traffic._placeOnLane(veh, arc, p);
+    const along = (veh.x - p.x) * rx + (veh.z - p.z) * rz;
+    if (along <= 0) ok = false;
+  }
+  return ok;
 })());
 
 // ---------------------------------------------------------------- 2. 发展

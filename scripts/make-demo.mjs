@@ -57,13 +57,25 @@ lay(segX(6, 30, 8), 2, '外环北路 z=8');
 const sky = city.buildRoad(segX(6, 30, 30), 3, { elevated: true });
 console.log('  高架高速（3 座立交）', sky.ok ? 'OK' : sky.msg);
 if (!sky.ok) failed++;
+// --- 城市中央的「高架快速路」：直接架在 z=18 大道上方 -------------------
+// 高架限速 100km/h，地面大道只有 60km/h：过境的 车会自己选走高架，
+// 于是高架上真的有车跑（之前高架是断头路 / 限速算错，所以一条车都没有）。
+const sky2 = city.buildRoad(segX(6, 30, 18), 3, { elevated: true });
+console.log('  中央高架快速路（z=18 立交）', sky2.ok ? 'OK' : sky2.msg);
+if (!sky2.ok) failed++;
 // --- 南岸高速：穿山（隧道）+ 跨河（大桥），直通地图东、西两侧 ---
 lay(segX(0, 14, 44), 3, '南岸高速 西段');
 lay(segX(15, 22, 44), 3, '南岸高速 穿山隧道', { tunnel: true });   // 强行穿山 -> 隧道
 lay(segX(23, 32, 44), 3, '南岸高速 中段');
-lay(segX(33, 44, 44), 3, '南岸高速 跨河大桥');
+lay(segX(33, 42, 44), 3, '南岸高速 跨河大桥');
 // 西侧外环穿西南山体（隧道），与南岸高速接上
 lay(segZ(6, 35, 43), 2, '外环西路 穿山隧道', { tunnel: true });
+// --- 高架匝道：让车真的能开上高架（否则高架就是两头堵死的空中楼阁）-------
+// 北侧两座匝道：从 x=10 / x=26 大道爬升，接上 z=18 的中央高架快速路
+const ramp1 = city.buildRoad(segZ(10, 12, 18), 3, { elevated: true, ramp: 'up' });
+console.log('  高架匝道 x=10', ramp1.ok ? 'OK' : ramp1.msg);
+const ramp2 = city.buildRoad(segZ(26, 12, 18), 3, { elevated: true, ramp: 'up' });
+console.log('  高架匝道 x=26', ramp2.ok ? 'OK' : ramp2.msg);
 // --- 高速出入口（城市与外界的唯一通道）---
 // 北部入口支线
 lay(segZ(10, 0, 8), 2, '入口支线 x=10');

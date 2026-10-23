@@ -3,7 +3,7 @@
 // ============================================================================
 import {
   MAP, TIME, ROADS, ZONES, ECON, SERVICES, SERVICE_BY_ID,
-  BUILDING_CAPS, TRAFFIC, LAND, TERRAIN, ELEV, LANE_TYPE_LIST, DEMOGRAPHY, hash2,
+  BUILDING_CAPS, TRAFFIC, LAND, TERRAIN, ELEV, LANE_TYPE_LIST, DEMOGRAPHY, hash2, SIGNAL,
 } from './constants.js';
 import { buildNetwork, tileIndex } from './roadnet.js';
 import { TrafficSim } from './traffic.js';
@@ -88,6 +88,8 @@ export class City {
     this.ledger = [];
     // 财政结算步长（游戏分钟）：每 N 分钟把累计收支写进流水一次
     this.settleMinutes = ECON.SETTLE_MINUTES;
+    // 城市设置（信号灯方案等）
+    this.settings = { signalMode: SIGNAL.MODE.AUTO };
     this._settleAcc = 0;
     this._genTerrain();
     this._initTiles();
@@ -147,13 +149,14 @@ export class City {
         const i = z * S + x;
         if (this.flat) { h[i] = 0; continue; }   // 平地（测试用）
         let v = 0;
-        v += 3.2 * noise(x * 0.038, z * 0.038, 1, s);          // 大地形
-        v += 1.8 * noise(x * 0.094, z * 0.094, 1, s + 31);     // 中丘
-        v += 0.7 * noise(x * 0.225, z * 0.225, 1, s + 77);     // 小起伏
+        v += 4.6 * noise(x * 0.034, z * 0.034, 1, s);          // 大地形（连绵的丘陵）
+        v += 2.6 * noise(x * 0.088, z * 0.088, 1, s + 31);     // 中丘
+        v += 0.9 * noise(x * 0.215, z * 0.215, 1, s + 77);     // 小起伏
+        v += 0.25 * noise(x * 0.47, z * 0.47, 1, s + 131);     // 微地形
         // 盆地：地图中部（玩家起手区）地势低平，越靠边缘越抬高
         const d = Math.hypot(x - S * 0.46, z - S * 0.46);
-        const u = Math.max(0, Math.min(1, (d - 15) / 18));
-        v += 6 * Math.pow(u, 1.25);
+        const u = Math.max(0, Math.min(1, (d - 14) / 17));
+        v += 9 * Math.pow(u, 1.35);
         h[i] = Math.max(0, v);
       }
     }
@@ -167,6 +170,20 @@ export class City {
           if (dd >= p.r) continue;
           const t = 1 - dd / p.r;
           h[z * S + x] += p.h * Math.pow(t, 1.45);
+        }
+      }
+    }
+    // 2.5) 城郊小丘：让城区周边也有起伏（不影响主干道的坡度）
+    if (!this.flat) {
+      const hills = [[34, 12, 2.8, 12], [34, 33, 2.8, 13], [2.5, 32, 2.8, 10], [14, 36, 2.6, 9]];
+      for (const [hx, hz, hr, hh] of hills) {
+        for (let z = Math.max(0, Math.floor(hz - hr)); z <= Math.min(S - 1, Math.ceil(hz + hr)); z++) {
+          for (let x = Math.max(0, Math.floor(hx - hr)); x <= Math.min(S - 1, Math.ceil(hx + hr)); x++) {
+            const dd = Math.hypot(x - hx, z - hz);
+            if (dd >= hr) continue;
+            const t = 1 - dd / hr;
+            h[z * S + x] += hh * Math.pow(t, 1.3);
+          }
         }
       }
     }
@@ -203,14 +220,17 @@ export class City {
   _genPeaks() {
     const S = MAP.SIZE;
     const s = this.seed;
-    const spots = [[0.03, 0.03], [0.93, 0.08], [0.94, 0.60], [0.10, 0.80], [0.42, 0.95]];
+    // 山岭分布：地图四周 + 中间的几座「城郊山丘」（隧道/绕行都用得上）
+    const spots = [
+      [0.03, 0.03], [0.93, 0.08], [0.94, 0.60], [0.10, 0.80], [0.42, 0.95],
+    ];
     const peaks = [];
     for (let k = 0; k < spots.length; k++) {
       peaks.push({
         x: (spots[k][0] + (hash2(k, 1, s) - 0.5) * 0.05) * S,
         z: (spots[k][1] + (hash2(k, 2, s) - 0.5) * 0.05) * S,
-        r: 4.0 + hash2(k, 3, s) * 2.0,
-        h: 15 + hash2(k, 4, s) * 8,
+        r: 3.6 + hash2(k, 3, s) * 2.6,
+        h: 16 + hash2(k, 4, s) * 15,
       });
     }
     return peaks;
@@ -312,6 +332,34 @@ export class City {
     if (elevated) {
       // 高架道路：两端设坡道，中部抬升形成立体交叉（地面道路保持在下层）
       const n = valid.length;
+      // 匝道（ramp）：一端贴地面（接地面路），另一端爬到高架高度（接高架）
+      // —— 没有匝道，高架高速就是个「两头堵死的空中楼阁」，谁也上不去
+      if (opts.ramp && n >= 2) {
+        const up = opts.ramp === 'up';
+        const startTile = up ? valid[0] : valid[n - 1];
+        const endTile = up ? valid[n - 1] : valid[0];
+        const hStart = (this.tiles[startTile].road && this.tiles[startTile].roadH !== undefined)
+          ? this.tiles[startTile].roadH : this.elevAt(startTile);
+        const endT = this.tiles[endTile];
+        const hEnd = endT.over ? (endT.h || 0) : (hStart + ELEV.BRIDGE_HEIGHT);
+        const rise = Math.abs(hEnd - hStart);
+        if (rise > ELEV.MAX_RAMP * (n - 1) + 0.01) {
+          return { ok: false, msg: '匝道太短，坡度超过 ' + Math.round(ELEV.MAX_RAMP / MAP.TILE * 100) + '%（请修长一点）' };
+        }
+        for (let k = 0; k < n; k++) {
+          const i = valid[k];
+          const t = this.tiles[i];
+          if (!t.road) { t.zone = 0; t.level = 0; t.service = 0; }
+          t.over = roadType;
+          const u = up ? k / (n - 1) : 1 - k / (n - 1);
+          t.h = hStart + (hEnd - hStart) * u;
+          t.olt = 0;
+          this.markDirty(i);
+        }
+        this.rebuildNetwork();
+        this.refreshAggregates();
+        return { ok: true, msg: '已架设高架匝道（-' + Math.round(cost) + ' §）', cost };
+      }
       const profile = heightProfile(n, ELEV.BRIDGE_HEIGHT, ELEV.RAMP_TILES);
       // 桥面本身要平（两端等高、中间一段平台），这样跨过地面路才像真正的立交
       const endH = (i) => {
@@ -448,7 +496,8 @@ export class City {
         prof[k] = align[k] - Math.min(Math.max(0, sm[k]), maxDrop);
       }
       // 坡度限制：相邻两格高差必须 <= MAX_RAMP（否则路网会在此断开，车过不去）
-      const limit = (k) => ELEV.MAX_RAMP * this._tileStep(tiles[k - 1], tiles[k]);
+      // 乘 0.96 留一点余量，避免浮点误差把路网掐断
+      const limit = (k) => ELEV.MAX_RAMP * 0.96 * this._tileStep(tiles[k - 1], tiles[k]);
       for (let k = 1; k < n; k++) {
         const lim = limit(k);
         if (prof[k] - prof[k - 1] > lim) prof[k] = prof[k - 1] + lim;
@@ -825,6 +874,16 @@ export class City {
         '，路上已经有车了（速度已设为 2×）',
       cost,
     };
+  }
+
+  /** 切换信号灯方案（四向分相 / 对向通行 / 自动） */
+  setSignalMode(mode) {
+    const m = Number(mode);
+    if (!SIGNAL.MODE_LIST.some((x) => x.id === m)) return { ok: false, msg: '未知的信号灯方案' };
+    this.settings.signalMode = m;
+    this.traffic.rebuildSignalPlans();
+    const def = SIGNAL.MODE_LIST.find((x) => x.id === m);
+    return { ok: true, msg: '信号灯方案已切换为「' + def.name + '」：' + def.desc };
   }
 
   /**
@@ -1213,6 +1272,7 @@ export class City {
       id: this.id, name: this.name, seed: this.seed,
       tick: this.tick, funds: this.funds, tax: this.tax, speed: this.speed,
       settleMinutes: this.settleMinutes,
+      settings: { signalMode: (this.settings && this.settings.signalMode) || SIGNAL.MODE.AUTO },
       trafficT: Math.round(this.traffic.t || 0),
       entrances: (this.entrances || []).slice(),
       terrain: Array.from(this.terrain),
@@ -1245,6 +1305,8 @@ export class City {
     }
     city.tick = data.tick | 0;
     city.settleMinutes = data.settleMinutes || ECON.SETTLE_MINUTES;
+    city.settings = { signalMode: (data.settings && data.settings.signalMode !== undefined)
+      ? data.settings.signalMode : SIGNAL.MODE.AUTO };
     let oldFormat = false;
     city.tiles.forEach((t, i) => {
       const a = data.tiles[i] || [0, 0, 0, 0, 24, 0, 0, 0, 0, 0, 0];

@@ -115,8 +115,13 @@ export class Lab {
     this._parkingSpot(parkTile);
     const startTile = T(8, 23);
     const arc = c.traffic.tileAccess[startTile];
-    // 内侧车道设为公交车道 -> 小汽车只能走外侧车道（内侧车道的全局编号随行车方向而变）
-    c.setLane(T(20, 24), (c.traffic.net.arcs[arc].side < 0 ? 1 : c.traffic.net.arcs[arc].def.lanes - 2));
+    // 内侧车道设为公交车道 -> 小汽车只能走外侧车道（右侧通行：车道 0 = 最右 = 外侧）
+    // 全局车道号从 0（左）到 N-1（右）；本方向的内侧车道号随 side 而变
+    const arcDef = c.traffic.net.arcs[arc];
+    const innerGlobal = arcDef.side < 0
+      ? Math.floor(arcDef.def.lanes / 2)
+      : Math.floor(arcDef.def.lanes / 2) - 1;
+    c.setLane(T(20, 24), innerGlobal);
     // 6 辆车排成一列（车头间距 22m）：#1 是前方慢车（最终停进车位），其余 5 辆依次跟驰并排队
     for (let i = 0; i < 6; i++) {
       c.traffic.spawnScripted({
@@ -289,7 +294,7 @@ export class Lab {
       if (!isLast && arc) {
         const next = tr.net.arcs[v.path[v.pathIdx + 1]];
         const node = tr.net.nodes[arc.to];
-        if (node && node.hasSignal && !tr._canGo(node, next.axis)) waitingLight = true;
+        if (node && node.hasSignal && !tr._canGo(node, arc, next)) waitingLight = true;
       }
       if (v.parked || v.dwell > 0) {
         // 已停靠 / 停入车位

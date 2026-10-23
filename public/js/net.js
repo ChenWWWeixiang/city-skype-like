@@ -29,8 +29,10 @@ export const state = {
   demography: { pop: 0, housed: 0, waiting: 0, births: 0, deaths: 0, immigrants: 0, emigrants: 0 },
   fleet: { total: 0, cars: 0, trucks: 0, special: 0, scrapped: 0 },
   signals: new Uint8Array(N),
+  sigApproach: new Uint8Array(N),   // 每个进口方向的灯色（2bit/方向）
   vehicles: new Float32Array(0),
   settleMinutes: 10,
+  signalMode: 2,        // 信号灯方案：0 四向分相 / 1 对向通行 / 2 自动
   // 变更回调
   changedTiles: new Set(),
   congestionDirty: true,
@@ -89,8 +91,8 @@ export class Net {
     const hlen = dv.getUint32(0, true);
     const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, hlen)));
     const vOff = 4 + hlen;
-    // 帧结构: [4B 头长度][JSON 头][车辆 Float32][拥堵贴图 N][信号灯贴图 N]
-    const vBytes = Math.max(0, buf.byteLength - vOff - N * 2);
+    // 帧结构: [4B 头长度][JSON 头][车辆 Float32][拥堵贴图 N][信号灯贴图 N][各进口灯色 N]
+    const vBytes = Math.max(0, buf.byteLength - vOff - N * 3);
     const veh = new Float32Array(buf.slice(vOff, vOff + vBytes));
     state.vehicles = veh;
     this.pushVehFrame(veh);
@@ -106,6 +108,8 @@ export class Net {
     // 信号灯贴图（紧随拥堵贴图）
     const sigOff = vOff + vBytes + N;
     state.signals = new Uint8Array(buf.slice(sigOff, sigOff + N));
+    // 各进口方向的灯色：N/E/S/W 各 2bit（0红 1黄 2绿）
+    state.sigApproach = new Uint8Array(buf.slice(sigOff + N, sigOff + N * 2));
     state.signalsDirty = true;
 
     this.applyHeader(header);
@@ -210,6 +214,7 @@ export class Net {
     state.traffic = h.traffic; state.ledger = h.ledger || [];
     state.lab = h.lab || null;
     if (h.settleMinutes) state.settleMinutes = h.settleMinutes;
+    if (h.signalMode !== undefined) state.signalMode = h.signalMode;
     if (h.demography) state.demography = h.demography;
     if (h.fleet) state.fleet = h.fleet;
     if (h.events) state.events = h.events;

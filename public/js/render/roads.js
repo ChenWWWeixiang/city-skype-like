@@ -35,14 +35,23 @@ function asphaltTexture(lanes, base) {
     g.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,.045)' : 'rgba(0,0,0,.07)';
     g.fillRect(x, y, 1.5, 1.5);
   }
-  g.fillStyle = 'rgba(226,226,214,.70)';
-  g.fillRect(2, 0, 2, 128);
-  g.fillRect(60, 0, 2, 128);
-  g.fillStyle = 'rgba(238,200,110,.85)';
-  if (lanes <= 2) {
-    for (let y = 0; y < 128; y += 32) g.fillRect(31, y, 2, 18);
-  } else {
-    for (let y = 0; y < 128; y += 32) { g.fillRect(15, y, 2, 18); g.fillRect(47, y, 2, 18); }
+  // 车道线：路两侧白色实线；同向车道之间白色虚线；两个方向之间双黄线。
+  // （u 方向 = 横向，0..1 对应道路宽度；贴图左右对称，所以南北/东西向通用）
+  const N = Math.max(2, lanes);
+  const laneW = 64 / N;
+  g.fillStyle = 'rgba(228,228,220,.72)';            // 路缘线
+  g.fillRect(1, 0, 2, 128);
+  g.fillRect(61, 0, 2, 128);
+  for (let k = 1; k < N; k++) {
+    const x = Math.round(k * laneW);
+    if (k === N / 2) {                            // 方向分界 -> 双黄实线
+      g.fillStyle = 'rgba(238,196,66,.92)';
+      g.fillRect(x - 2, 0, 2, 128);
+      g.fillRect(x + 1, 0, 2, 128);
+    } else {                                      // 同向车道 -> 白色虚线
+      g.fillStyle = 'rgba(228,228,220,.62)';
+      for (let y = 0; y < 128; y += 32) g.fillRect(x - 1, y, 2, 18);
+    }
   }
   const t = new THREE.CanvasTexture(c);
   t.wrapS = THREE.ClampToEdgeWrapping;
@@ -50,6 +59,30 @@ function asphaltTexture(lanes, base) {
   t.anisotropy = 8;
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
+}
+
+
+/** 隧道门框的零件：两根门柱 + 门楣 + 拱券（局部坐标：x 横向, y 向上, z 朝山里） */
+function portalPieces(roadWidth) {
+  const W = roadWidth / 2;
+  const OW = W + 2.6;
+  const H = 7.6, OH = 4.4, D = 1.7;
+  const pieces = [];
+  pieces.push({ x: -(W + OW) / 2, y: H / 2, z: 0, sx: OW - W, sy: H, sz: D, rot: 0 });
+  pieces.push({ x: (W + OW) / 2, y: H / 2, z: 0, sx: OW - W, sy: H, sz: D, rot: 0 });
+  pieces.push({ x: 0, y: (OH + H) / 2, z: 0, sx: 2 * W, sy: H - OH, sz: D, rot: 0 });
+  const N = 7, ry = W * 0.55;
+  for (let i = 0; i < N; i++) {
+    const a = Math.PI * (i + 0.5) / N;
+    pieces.push({
+      x: Math.cos(a) * W,
+      y: OH + Math.sin(a) * ry,
+      z: 0,
+      sx: (Math.PI * W / N) * 1.3, sy: 1.5, sz: D,
+      rot: Math.atan2(Math.cos(a) * ry, -Math.sin(a) * W),
+    });
+  }
+  return { pieces, void: { w: 2 * W * 0.97, h: OH + ry + 0.4, d: 18 } };
 }
 
 function plainTexture(base) {
@@ -112,6 +145,30 @@ export class RoadRenderer {
     this.laneBands.frustumCulled = false;
     this.laneBands.renderOrder = 2;
     scene.add(this.laneBands);
+
+    // ---- 隧道洞口：混凝土门框（门柱 + 门楣 + 拱券）+ 里面一条黑隧道 ----
+    this.portalFrames = {};
+    this.portalVoids = {};
+    for (const key of [1, 2, 3]) {
+      const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+      const frame = new THREE.InstancedMesh(boxGeo, new THREE.MeshStandardMaterial({
+        color: 0x9a958c, roughness: 0.95, metalness: 0.02,
+      }), 900);
+      frame.count = 0;
+      frame.frustumCulled = false;
+      frame.castShadow = true;
+      scene.add(frame);
+      this.portalFrames[key] = frame;
+      // 「隧道内部」：一个反面渲染的黑盒子，从洞口看进去就是黑的
+      const voidGeo = new THREE.BoxGeometry(1, 1, 1);
+      const vd = new THREE.InstancedMesh(voidGeo, new THREE.MeshBasicMaterial({
+        color: 0x07080a, toneMapped: false, side: THREE.BackSide,
+      }), 200);
+      vd.count = 0;
+      vd.frustumCulled = false;
+      scene.add(vd);
+      this.portalVoids[key] = vd;
+    }
 
     // 高架桥墩
     const pillarGeo = new THREE.CylinderGeometry(1.1, 1.4, 1, 8);
@@ -214,6 +271,30 @@ export class RoadRenderer {
         const hN = nH(0, -1), hS = nH(0, 1), hE = nH(1, 0), hW = nH(-1, 0);
 
         rect(wx - hw, wx + hw, wz - hw, wz + hw, 'x', idxCenter, y, y);
+        // 大型十字路口：把四个「角」补成沥青并向外扩一个圆角 ——
+        // 这就是「弧形右转通道」的路面（右转车从外侧绕过路口）。
+        if (inst.layer === 0 && def.width >= 11 && (m & 1) && (m & 4) && (m & 16) && (m & 64)) {
+          for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+            const cx0 = wx + sx * hw, cx1 = wx + sx * (T / 2);
+            const cz0 = wz + sz * hw, cz1 = wz + sz * (T / 2);
+            pushQuad([
+              [cx0, cz0, 0.5, 0.5, y], [cx1, cz0, 0.5, 0.5, y],
+              [cx1, cz1, 0.5, 0.5, y], [cx0, cz1, 0.5, 0.5, y],
+            ], idxCenter);
+            // 外扩的圆角（扇形）
+            const ocx = wx + sx * (T / 2), ocz = wz + sz * (T / 2);
+            const FL = 1.8, SEG = 5;
+            const nb = vbase;
+            pos.push(ocx, y, ocz); nor.push(0, 1, 0); uv.push(0.5, 0.5); col.push(1, 1, 1);
+            for (let k = 0; k <= SEG; k++) {
+              const a = (k / SEG) * Math.PI / 2;
+              pos.push(ocx + sx * Math.cos(a) * FL, y, ocz + sz * Math.sin(a) * FL);
+              nor.push(0, 1, 0); uv.push(0.5, 0.5); col.push(1, 1, 1);
+            }
+            for (let k = 0; k < SEG; k++) idxCenter.push(nb, nb + 1 + k, nb + 2 + k);
+            vbase += SEG + 2;
+          }
+        }
         // 地面层补路缘（高架层悬空，不需要）
         if (inst.layer === 0) {
           if (!(m & 1)) pushCurb(wx - hw, wz - hw, wx + hw, wz - hw, y - 0.04);
@@ -252,16 +333,30 @@ export class RoadRenderer {
         tiles.push(i);
 
         // 桥墩：地面层的「桥」要架在河床上；高架层要架在地面上。
-        // 下方已经有地面道路的格子不立柱子 —— 否则柱子会正好挡在下层车道中间。
+        // 高架下面是地面道路时，柱子挪到高架两侧的路肩上 ——
+        // 既不挡住下层车道（中缝里走），结构看着也更像真的高架。
         const underRoad = inst.layer === 1 && state.road[i];
-        if (!underRoad && pillarCount < this.pillars.instanceMatrix.count) {
+        if (pillarCount < this.pillars.instanceMatrix.count) {
           const ground = (state.height && state.height[i]) || 0;
           const span = inst.h - ground;
           if (span > 2.2) {
-            pillarM.makeScale(1, span, 1);
-            pillarM.setPosition(wx, ground, wz);
-            this.pillars.setMatrixAt(pillarCount, pillarM);
-            pillarCount++;
+            const alongX = (m & 4) || (m & 64);     // 道路沿 X 走？
+            const gDef = ROAD_DEFS[state.road[i]] || def;
+            const lateral = Math.max(def.width, gDef.width) / 2 - 0.7;
+            const place = (px, pz) => {
+              if (pillarCount >= this.pillars.instanceMatrix.count) return;
+              pillarM.makeScale(1, span, 1);
+              pillarM.setPosition(px, ground, pz);
+              this.pillars.setMatrixAt(pillarCount, pillarM);
+              pillarCount++;
+            };
+            if (underRoad) {
+              // 柱子摆在下层道路的路肩上，绝不挡住下层车道
+              if (alongX) { place(wx, wz - lateral); place(wx, wz + lateral); }
+              else { place(wx - lateral, wz); place(wx + lateral, wz); }
+            } else {
+              place(wx, wz);
+            }
           }
         }
       }
@@ -286,6 +381,67 @@ export class RoadRenderer {
     this.pillars.count = pillarCount;
     this.pillars.instanceMatrix.needsUpdate = true;
     this._rebuildLaneBands(state);
+    this._rebuildPortals(state);
+  }
+
+  /** 隧道洞口：地面路与隧道段的交界处立一个门框，里面是一条黑隧道 */
+  _rebuildPortals(state) {
+    const T = MAP.TILE;
+    const counts = { 1: 0, 2: 0, 3: 0 };
+    const vcounts = { 1: 0, 2: 0, 3: 0 };
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const qr = new THREE.Quaternion();
+    const p = new THREE.Vector3();
+    const sc = new THREE.Vector3(1, 1, 1);
+    const up = new THREE.Vector3(0, 1, 0);
+    const zAx = new THREE.Vector3(0, 0, 1);
+    const DIR4 = [{ dx: 0, dz: -1 }, { dx: 1, dz: 0 }, { dx: 0, dz: 1 }, { dx: -1, dz: 0 }];
+    for (let i = 0; i < state.tunnel.length; i++) {
+      if (!state.tunnel[i] || !state.road[i]) continue;
+      const key = state.road[i];
+      const frame = this.portalFrames[key];
+      const vd = this.portalVoids[key];
+      if (!frame || !vd) continue;
+      const parts = portalPieces(ROAD_DEFS[key].width);
+      const x = i % MAP.SIZE, z = Math.floor(i / MAP.SIZE);
+      const y = (state.roadH && state.roadH[i]) || 0;
+      for (const d of DIR4) {
+        const nx = x + d.dx, nz = z + d.dz;
+        if (nx < 0 || nz < 0 || nx >= MAP.SIZE || nz >= MAP.SIZE) continue;
+        const j = nz * MAP.SIZE + nx;
+        if (!state.road[j] || state.tunnel[j]) continue;    // 只有「地面 -> 隧道」的交界才是洞口
+        // 洞口在两个格子的交界处；局部 +z 指向山里（隧道内侧）
+        const px = (x + 0.5) * T - HALF + d.dx * (T / 2);
+        const pz = (z + 0.5) * T - HALF + d.dz * (T / 2);
+        const yaw = Math.atan2(-d.dx, -d.dz);
+        const cy = Math.cos(yaw), sy = Math.sin(yaw);
+        q.setFromAxisAngle(up, yaw);
+        for (const pc of parts.pieces) {
+          if (counts[key] >= frame.instanceMatrix.count) break;
+          // 局部坐标 -> 世界
+          const wx = px + pc.x * cy + pc.z * sy;
+          const wz = pz - pc.x * sy + pc.z * cy;
+          p.set(wx, y - 0.3 + pc.y, wz);
+          qr.setFromAxisAngle(zAx, pc.rot);
+          m.compose(p, q.clone().multiply(qr), sc.set(pc.sx, pc.sy, pc.sz));
+          frame.setMatrixAt(counts[key]++, m);
+        }
+        // 隧道内部：黑盒子，从洞口看进去是黑的
+        if (vcounts[key] < vd.instanceMatrix.count) {
+          const vz = parts.void.d / 2 - 0.3;
+          p.set(px + (-d.dx) * vz, y - 0.3 + parts.void.h / 2, pz + (-d.dz) * vz);
+          m.compose(p, q, sc.set(parts.void.w, parts.void.h, parts.void.d));
+          vd.setMatrixAt(vcounts[key]++, m);
+        }
+      }
+    }
+    for (const key of [1, 2, 3]) {
+      this.portalFrames[key].count = counts[key];
+      this.portalFrames[key].instanceMatrix.needsUpdate = true;
+      this.portalVoids[key].count = vcounts[key];
+      this.portalVoids[key].instanceMatrix.needsUpdate = true;
+    }
   }
 
   /** 车道类型色带：特殊车道（公交/自行车/转弯）着色 */

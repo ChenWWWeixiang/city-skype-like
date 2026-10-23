@@ -16,6 +16,7 @@ export class Tools {
     this.ui = opts.ui;
     this.overlay = opts.overlay;
     this.state = opts.state;
+    this.ground = opts.ground;      // 地形网格：有起伏时必须按地形拾取，否则高亮会错位
     this.tool = 'select';
     this.opt = {
       roadType: 1, zone: 'res', service: 'police', overlay: 'none',

@@ -14,10 +14,10 @@ const LAMP_COLORS = [RED, YELLOW, GREEN];
 
 // 每个进口方向：bit(道路连接掩码) / 组(0=南北,1=东西) / 灯头旋转角
 const APPROACHES = [
-  { bit: 1, group: 0, rot: 0 },                 // 北侧来车（向南）
-  { bit: 4, group: 1, rot: -Math.PI / 2 },      // 东侧来车（向西）
-  { bit: 16, group: 0, rot: Math.PI },          // 南侧来车（向北）
-  { bit: 64, group: 1, rot: Math.PI / 2 },      // 西侧来车（向东）
+  { bit: 1, group: 0, rot: 0, dir: 'N', shift: 0 },           // 北侧来车（向南）
+  { bit: 4, group: 1, rot: -Math.PI / 2, dir: 'E', shift: 2 },// 东侧来车（向西）
+  { bit: 16, group: 0, rot: Math.PI, dir: 'S', shift: 4 },    // 南侧来车（向北）
+  { bit: 64, group: 1, rot: Math.PI / 2, dir: 'W', shift: 6 },// 西侧来车（向东）
 ];
 
 export class SignalRenderer {
@@ -75,7 +75,7 @@ export class SignalRenderer {
     for (let i = 0; i < sig.length; i++) {
       const v = sig[i];
       if (!v) continue;
-      const elevated = (v & 16) !== 0;
+      const elevated = (v & 32) !== 0;
       const mask = state.mask[i] | state.overMask[i];
       if (!mask) continue;
       const roadType = state.road[i] || state.over[i];
@@ -140,20 +140,19 @@ export class SignalRenderer {
     if (this.lamps.instanceColor) this.lamps.instanceColor.needsUpdate = true;
   }
 
-  /** 刷新灯色（与仿真相位一致） */
+  /** 刷新灯色（与仿真相位一致：每个进口方向单独亮） */
   update(state) {
     const sig = state.signals;
+    const app = state.sigApproach;
     const c = this._c;
     let li = 0;
     for (let k = 0; k < this.heads.length; k++) {
       const h = this.heads[k];
       const v = sig[h.tile] || 0;
-      const st = (v >> 1) & 3;
-      const phase = (v >> 3) & 1;
-      let on = 0;
-      if (st === 2) on = 0;                       // 全红
-      else if (h.group === phase) on = st === 1 ? 1 : 2;
-      else on = 0;
+      // 每个进口方向 2bit：0红 1黄 2绿
+      const st = app ? ((app[h.tile] >> h.shift) & 3) : 0;
+      // on: 0=红 1=黄 2=绿（灯珠自上而下 红黄绿）
+      const on = st === 2 ? 2 : (st === 1 ? 1 : 0);
       for (let j = 0; j < 3; j++) {
         c.copy(DARK);
         if (j === on) c.copy(LAMP_COLORS[j]).multiplyScalar(1.7);
